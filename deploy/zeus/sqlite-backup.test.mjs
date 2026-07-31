@@ -104,6 +104,9 @@ test('creates a consistent atomic backup of committed WAL data', async () => {
     assert.deepEqual(await all(destinationDatabase, 'PRAGMA integrity_check'), [
       { integrity_check: 'ok' },
     ]);
+    assert.deepEqual(await all(destinationDatabase, 'PRAGMA journal_mode'), [
+      { journal_mode: 'delete' },
+    ]);
     assert.equal(result.sourcePath, sourcePath);
     assert.equal(result.destinationPath, destinationPath);
     assert.equal(result.integrity, 'ok');
@@ -113,6 +116,13 @@ test('creates a consistent atomic backup of committed WAL data', async () => {
   } finally {
     await close(destinationDatabase);
   }
+
+  assert.deepEqual(
+    (await readdir(fixtureRoot)).filter((entry) =>
+      entry.startsWith(`.${path.basename(destinationPath)}.partial-`)
+    ),
+    []
+  );
 });
 
 test('rejects identical source and destination paths', async () => {

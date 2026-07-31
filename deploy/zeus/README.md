@@ -103,7 +103,9 @@ OLD_CONFIG_ROOT=/home/crovlune/containers/overseerr/config
 test ! -e "$REHEARSAL_ROOT"
 install -d -m 0700 "$REHEARSAL_ROOT"
 install -d -m 0700 -o 1000 -g 1000 \
-  "$REHEARSAL_ROOT/config/db" "$REHEARSAL_ROOT/logs"
+  "$REHEARSAL_ROOT/config" \
+  "$REHEARSAL_ROOT/config/db" \
+  "$REHEARSAL_ROOT/logs"
 install -m 0644 deploy/zeus/compose.yaml \
   "$REHEARSAL_ROOT/compose.yaml"
 install -m 0644 deploy/zeus/compose.rehearsal.yaml \
@@ -125,6 +127,8 @@ OLD_IMAGE_ID="$(docker inspect overseerr --format '{{.Image}}')"
 printf '%s\n' "$OLD_IMAGE_ID" | grep -E '^sha256:[0-9a-f]{64}$'
 rsync -a --exclude '/db/' --exclude '/logs/' --exclude '/cache/' \
   "$OLD_CONFIG_ROOT/" "$REHEARSAL_ROOT/config/"
+chmod 0700 "$REHEARSAL_ROOT" "$REHEARSAL_ROOT/config" \
+  "$REHEARSAL_ROOT/config/db" "$REHEARSAL_ROOT/logs"
 
 docker run --rm --user 1000:1000 --entrypoint node \
   -v "$REHEARSAL_ROOT:/work" "$OLD_IMAGE_ID" \
@@ -145,12 +149,15 @@ docker run --rm --user 1000:1000 --entrypoint node \
 ```
 
 The backup helper accepts exactly two absolute paths, never overwrites a
-destination, and retains a failed partial database as evidence. On success it
-prints whether partial cleanup completed; if cleanup fails after atomic
-publication, it reports the exact retained hard-link path while keeping the
-valid destination and a successful exit. The sanitizer accepts only the copied
-settings file, removes only its top-level `trakt` property, and writes the
-temporary and final file with mode `0600`.
+destination, converts a verified WAL source copy to a standalone
+`journal_mode=delete` database, and retains a failed partial database as
+evidence. A successful backup leaves no partial WAL/SHM sidecars and can be
+inventoried through the read-only mount. It prints whether partial cleanup
+completed; if cleanup fails after atomic publication, it reports the exact
+retained hard-link path while keeping the valid destination and a successful
+exit. The sanitizer accepts only the copied settings file, removes only its
+top-level `trakt` property, and writes the temporary and final file with mode
+`0600`.
 
 Render the merged Compose model before starting. The dummy digest below is for
 local interpolation validation only; rehearsal and production use the real

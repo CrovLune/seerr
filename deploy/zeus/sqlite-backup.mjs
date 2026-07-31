@@ -53,6 +53,25 @@ const integrityCheck = (database) =>
     });
   });
 
+const setStandaloneJournalMode = (database) =>
+  new Promise((resolve, reject) => {
+    database.get('PRAGMA journal_mode = DELETE', (error, row) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      if (row?.journal_mode !== 'delete') {
+        reject(
+          new Error(
+            `standalone journal mode failed: ${row?.journal_mode ?? 'unknown'}`
+          )
+        );
+        return;
+      }
+      resolve();
+    });
+  });
+
 const assertDestinationAbsent = async (destinationPath) => {
   try {
     await access(destinationPath, constants.F_OK);
@@ -118,7 +137,8 @@ export const backupDatabase = async (sourcePath, destinationPath) => {
     await closeDatabase(sourceDatabase);
     sourceDatabase = undefined;
 
-    partialDatabase = await openDatabase(partialPath, sqlite3.OPEN_READONLY);
+    partialDatabase = await openDatabase(partialPath, sqlite3.OPEN_READWRITE);
+    await setStandaloneJournalMode(partialDatabase);
     const integrityRows = await integrityCheck(partialDatabase);
     await closeDatabase(partialDatabase);
     partialDatabase = undefined;

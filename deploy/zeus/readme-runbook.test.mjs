@@ -218,3 +218,34 @@ test('cutover write marker precedes every intentional production mutation', asyn
     /test ! -e "\$CUTOVER_BACKUP_ROOT\/post-cutover-write\.txt"[\s\S]*automatic_database_rollback=false/
   );
 });
+
+test('rehearsal copy restores private root and config directory modes', async () => {
+  const readme = await readRunbook();
+  const bashBlocks = extractBashBlocks(readme);
+  const setupBlock = bashBlocks.find(
+    (block) =>
+      block.includes('test ! -e "$REHEARSAL_ROOT"') &&
+      block.includes('install -d -m 0700')
+  );
+  const copyBlock = bashBlocks.find(
+    (block) =>
+      block.includes('"$OLD_CONFIG_ROOT/" "$REHEARSAL_ROOT/config/"') &&
+      block.includes('sanitize-trakt-settings.mjs')
+  );
+
+  assert.ok(setupBlock, 'rehearsal directory setup block must exist');
+  assert.ok(copyBlock, 'rehearsal config-copy block must exist');
+  assert.ok(
+    setupBlock.includes('"$REHEARSAL_ROOT/config"'),
+    'the intermediate config directory must receive an explicit private mode'
+  );
+
+  const rsyncIndex = copyBlock.indexOf('rsync -a');
+  const chmodIndex = copyBlock.indexOf(
+    'chmod 0700 "$REHEARSAL_ROOT" "$REHEARSAL_ROOT/config"'
+  );
+  const sanitizerIndex = copyBlock.indexOf('sanitize-trakt-settings.mjs');
+  assert.ok(rsyncIndex >= 0);
+  assert.ok(chmodIndex > rsyncIndex);
+  assert.ok(sanitizerIndex > chmodIndex);
+});
