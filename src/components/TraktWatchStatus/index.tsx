@@ -33,9 +33,14 @@ const TraktWatchStatus = ({ mediaType, tmdbId }: TraktWatchStatusProps) => {
       <div
         className="media-fact flex-col gap-1"
         aria-label={intl.formatMessage(messages.loading)}
+        aria-busy="true"
+        role="status"
       >
         <span>{intl.formatMessage(messages.title)}</span>
-        <span className="h-8 w-full animate-pulse rounded bg-gray-700" />
+        <span
+          className="h-8 w-full animate-pulse rounded bg-gray-700"
+          aria-hidden="true"
+        />
       </div>
     );
   }
