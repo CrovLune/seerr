@@ -92,9 +92,8 @@ const UserSettings = ({ children }: UserSettingsProps) => {
   const ownerSettingsRestricted = currentUser?.id !== 1 && user.id === 1;
   const currentUserIsExactAdmin =
     ((currentUser?.permissions ?? 0) & Permission.ADMIN) === Permission.ADMIN;
-  const isLinkedAccountsRoute = router.asPath
-    .split('?')[0]
-    .endsWith('/settings/linked-accounts');
+  const isLinkedAccountsRoute =
+    router.pathname === '/users/[userId]/settings/linked-accounts';
 
   if (
     ownerSettingsRestricted &&

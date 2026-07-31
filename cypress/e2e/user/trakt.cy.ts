@@ -167,7 +167,7 @@ describe('Trakt cross-user administration', () => {
     });
   });
 
-  it('lets an exact delegated ADMIN manage owner Trakt without exposing other owner settings', () => {
+  it('lets an exact delegated ADMIN manage owner Trakt from direct URLs without exposing other owner settings', () => {
     cy.loginAsAdmin();
     cy.intercept('GET', '/api/v1/auth/me', {
       id: 2,
@@ -191,7 +191,7 @@ describe('Trakt cross-user administration', () => {
       connection: null,
     }).as('ownerTrakt');
 
-    cy.visit('/users/1/settings/linked-accounts');
+    cy.visit('/users/1/settings/linked-accounts#trakt');
     cy.wait('@delegatedAdmin');
     cy.wait('@ownerTrakt');
     cy.get('[data-testid=profile-trakt-section]').within(() => {
@@ -201,7 +201,14 @@ describe('Trakt cross-user administration', () => {
     cy.contains('General').should('not.exist');
     cy.contains('Permissions').should('not.exist');
 
-    cy.visit('/users/1/settings/main');
+    cy.visit('/users/1/settings/linked-accounts?source=review');
+    cy.wait('@delegatedAdmin');
+    cy.wait('@ownerTrakt');
+    cy.get('[data-testid=profile-trakt-section]')
+      .contains('button', 'Connect')
+      .should('be.visible');
+
+    cy.visit('/users/1/settings/main?source=review#general');
     cy.wait('@delegatedAdmin');
     cy.contains(
       "You do not have permission to modify this user's settings"
