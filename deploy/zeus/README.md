@@ -478,7 +478,8 @@ project without deleting volumes:
 set -Eeuo pipefail
 cd /home/crovlune/containers/overseerr
 docker compose -f docker-compose.yml down --remove-orphans
-test -z "$(docker ps -aq --filter name='^overseerr$')"
+OVERSEERR_IDS="$(docker ps -aq --filter name='^overseerr$')"
+test -z "$OVERSEERR_IDS"
 test -d "$OLD_CONFIG_DIR"
 test -f "$OLD_COMPOSE_FILE"
 test -d "$CUTOVER_BACKUP_ROOT/overseerr-config-raw"

@@ -106,3 +106,23 @@ test('rollback guards and verifies evidence before stopping Seerr', async () => 
   assert.ok(imageIdCheckIndex < seerrDownIndex);
   assert.ok(configChecksumIndex < seerrDownIndex);
 });
+
+test('old-container shutdown fails if Docker inspection fails', async () => {
+  const readme = await readRunbook();
+  const shutdownBlock = extractBashBlocks(readme).find(
+    (block) =>
+      block.includes('docker compose -f docker-compose.yml down') &&
+      block.includes("name='^overseerr$'")
+  );
+
+  assert.ok(shutdownBlock, 'Overseerr shutdown Bash block must exist');
+  assert.match(
+    shutdownBlock,
+    /OVERSEERR_IDS="\$\(docker ps -aq --filter name='\^overseerr\$'\)"\s*\ntest -z "\$OVERSEERR_IDS"/
+  );
+  assert.doesNotMatch(
+    shutdownBlock,
+    /test\s+-z\s+"\$\(docker ps/,
+    'docker ps must run as its own fail-fast assignment'
+  );
+});
