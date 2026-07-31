@@ -183,6 +183,14 @@ done
 REHEARSAL_HEALTH="$(
   docker inspect seerr-rehearsal --format '{{.State.Health.Status}}'
 )"
+if test "$REHEARSAL_HEALTH" != healthy; then
+  docker compose --env-file .env \
+    -f compose.yaml -f compose.rehearsal.yaml ps
+  docker compose --env-file .env \
+    -f compose.yaml -f compose.rehearsal.yaml \
+    logs --no-color --tail=300 seerr
+  exit 1
+fi
 test "$REHEARSAL_HEALTH" = healthy
 docker compose --env-file .env \
   -f compose.yaml -f compose.rehearsal.yaml ps

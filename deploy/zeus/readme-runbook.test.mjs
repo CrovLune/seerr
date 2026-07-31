@@ -140,27 +140,40 @@ test('rehearsal waits boundedly for health before HTTP and log checks', async ()
   const upIndex = rehearsalBlock.indexOf('up -d');
   const loopIndex = rehearsalBlock.indexOf('for attempt in $(seq 1 10); do');
   const sleepIndex = rehearsalBlock.indexOf('sleep 5');
+  const failureGuardIndex = rehearsalBlock.indexOf(
+    `if test "$REHEARSAL_HEALTH" != healthy; then`
+  );
+  const diagnosticLogsIndex = rehearsalBlock.indexOf(
+    'logs --no-color --tail=300 seerr',
+    failureGuardIndex
+  );
   const finalHealthIndex = rehearsalBlock.lastIndexOf(
     `test "$REHEARSAL_HEALTH" = healthy`
   );
   const httpIndex = rehearsalBlock.indexOf(
     'curl --fail http://127.0.0.1:15055/api/v1/status/appdata'
   );
-  const logsIndex = rehearsalBlock.indexOf('logs --no-color --tail=300 seerr');
+  const logsIndex = rehearsalBlock.lastIndexOf(
+    'logs --no-color --tail=300 seerr'
+  );
 
   for (const [label, index] of [
     ['Compose startup', upIndex],
     ['bounded health loop', loopIndex],
     ['bounded wait interval', sleepIndex],
+    ['failed-health diagnostic guard', failureGuardIndex],
+    ['failed-health migration logs', diagnosticLogsIndex],
     ['final health assertion', finalHealthIndex],
     ['HTTP check', httpIndex],
-    ['migration logs check', logsIndex],
+    ['successful migration logs check', logsIndex],
   ]) {
     assert.ok(index >= 0, `${label} must exist in rehearsal startup block`);
   }
   assert.ok(upIndex < loopIndex);
   assert.ok(loopIndex < sleepIndex);
-  assert.ok(sleepIndex < finalHealthIndex);
+  assert.ok(sleepIndex < failureGuardIndex);
+  assert.ok(failureGuardIndex < diagnosticLogsIndex);
+  assert.ok(diagnosticLogsIndex < finalHealthIndex);
   assert.ok(finalHealthIndex < httpIndex);
   assert.ok(httpIndex < logsIndex);
 });
