@@ -1,4 +1,5 @@
 import TraktAPI, {
+  TraktApiError,
   type TraktProfile,
   type TraktTokenSet,
 } from '@server/api/trakt';
@@ -26,6 +27,10 @@ import {
   isTraktConfigured,
 } from '@server/lib/trakt/config';
 import { traktConfigurationMutex } from '@server/lib/trakt/configurationMutex';
+import {
+  TraktRefreshCoordinator,
+  type TraktAccessContext,
+} from '@server/lib/trakt/refreshCoordinator';
 import logger from '@server/logger';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
@@ -40,6 +45,9 @@ import {
 const AUTHORIZATION_LIFETIME_MS = 10 * 60 * 1000;
 const PROCESSING_LIFETIME_MS = 2 * 60 * 1000;
 const RETENTION_MS = 24 * 60 * 60 * 1000;
+const REFRESH_WINDOW_MS = 60 * 1000;
+
+const refreshCoordinator = new TraktRefreshCoordinator();
 
 const safeResultCodes = new Set<TraktSafeResultCode>([
   'access_denied',
@@ -93,6 +101,10 @@ interface PersistedCompletion {
   connectionId: number;
 }
 
+export interface TraktUnlinkResult {
+  remoteRevocationSucceeded: boolean;
+}
+
 class TerminalTransactionError extends Error {
   public constructor(public readonly resultCode: TraktSafeResultCode) {
     super(resultCode);
@@ -100,6 +112,8 @@ class TerminalTransactionError extends Error {
 }
 
 export class TraktConnectionService {
+  private readonly cooldownUntil = new Map<number, number>();
+
   public startAuthorization(input: {
     actorUserId: number;
     targetUserId: number;
@@ -389,6 +403,85 @@ export class TraktConnectionService {
     return result.affected ?? 0;
   }
 
+  public async withAuthenticatedApi<T>(
+    userId: number,
+    operation: (api: TraktAPI) => Promise<T>
+  ): Promise<T> {
+    const connection = await this.findConnectionWithTokensByUserId(userId);
+    if (!connection) {
+      throw new Error('Trakt connection not found');
+    }
+
+    this.throwIfCoolingDown(connection.id);
+    let context = this.toAccessContext(connection);
+    if (
+      !connection.expiresAt ||
+      connection.expiresAt.getTime() <= Date.now() + REFRESH_WINDOW_MS
+    ) {
+      context = await this.refreshAccess(
+        connection.id,
+        connection.tokenVersion
+      );
+    }
+
+    try {
+      const result = await operation(this.apiFor(context.accessToken));
+      await this.markValidated(context);
+      return result;
+    } catch (error) {
+      this.rememberRateLimit(context.connectionId, error);
+      if (!this.isUnauthorized(error)) {
+        throw error;
+      }
+    }
+
+    const replacement = await this.refreshAccess(
+      context.connectionId,
+      context.tokenVersion
+    );
+    try {
+      const result = await operation(this.apiFor(replacement.accessToken));
+      await this.markValidated(replacement);
+      return result;
+    } catch (error) {
+      this.rememberRateLimit(replacement.connectionId, error);
+      throw error;
+    }
+  }
+
+  public async unlink(userId: number): Promise<TraktUnlinkResult> {
+    const connection = await this.findConnectionWithTokensByUserId(userId);
+    if (!connection) {
+      throw new Error('Trakt connection not found');
+    }
+
+    let remoteRevocationSucceeded = false;
+    let errorClass: string | null = null;
+    try {
+      if (connection.accessToken) {
+        await this.apiFor().revoke(connection.accessToken);
+        remoteRevocationSucceeded = true;
+      }
+    } catch (error) {
+      errorClass = error instanceof Error ? error.name : 'UnknownError';
+    } finally {
+      await getRepository(TraktConnection).delete({ id: connection.id });
+      this.cooldownUntil.delete(connection.id);
+      this.invalidateWatchStatus(connection.id);
+    }
+
+    logger.info('Trakt connection unlinked', {
+      label: 'Trakt',
+      operation: 'unlink',
+      connectionId: connection.id,
+      userId,
+      remoteRevocationSucceeded,
+      errorClass,
+    });
+
+    return { remoteRevocationSucceeded };
+  }
+
   private async claimTransaction(
     rawState: string
   ): Promise<
@@ -614,6 +707,198 @@ export class TraktConnectionService {
     return { connectionId: saved.id };
   }
 
+  private async refreshAccess(
+    connectionId: number,
+    expectedTokenVersion: number
+  ): Promise<TraktAccessContext> {
+    return refreshCoordinator.run(connectionId, async () => {
+      const connection = await this.findConnectionWithTokensById(connectionId);
+      if (!connection) {
+        throw new Error('Trakt connection not found');
+      }
+      if (connection.tokenVersion !== expectedTokenVersion) {
+        return this.toAccessContext(connection);
+      }
+      if (
+        connection.status !== TraktConnectionStatus.ACTIVE ||
+        !connection.refreshToken
+      ) {
+        throw new Error('Trakt connection requires reconnection');
+      }
+
+      let replacement: TraktTokenSet;
+      try {
+        replacement = await this.apiFor().refresh(connection.refreshToken);
+      } catch (error) {
+        this.rememberRateLimit(connection.id, error);
+        if (!this.isUnauthorized(error)) {
+          throw error;
+        }
+
+        const invalidated = await getRepository(TraktConnection).update(
+          {
+            id: connection.id,
+            tokenVersion: connection.tokenVersion,
+          },
+          {
+            accessToken: null,
+            refreshToken: null,
+            expiresAt: null,
+            tokenVersion: connection.tokenVersion + 1,
+            status: TraktConnectionStatus.RECONNECT_REQUIRED,
+          }
+        );
+        if (invalidated.affected === 1) {
+          this.invalidateWatchStatus(connection.id);
+          logger.warn('Trakt connection requires reconnection', {
+            label: 'Trakt',
+            operation: 'reconnect_required',
+            connectionId: connection.id,
+            tokenVersion: connection.tokenVersion + 1,
+            resultCode: 'invalid_refresh',
+          });
+          throw error;
+        }
+
+        return this.loadWinningAccessContext(connection.id);
+      }
+
+      const updated = await getRepository(TraktConnection).update(
+        {
+          id: connection.id,
+          tokenVersion: connection.tokenVersion,
+        },
+        {
+          accessToken: replacement.accessToken,
+          refreshToken: replacement.refreshToken,
+          expiresAt: replacement.expiresAt,
+          tokenVersion: connection.tokenVersion + 1,
+          status: TraktConnectionStatus.ACTIVE,
+        }
+      );
+      if (updated.affected !== 1) {
+        return this.loadWinningAccessContext(connection.id);
+      }
+
+      this.invalidateWatchStatus(connection.id);
+      logger.info('Trakt access token refreshed', {
+        label: 'Trakt',
+        operation: 'token_refresh',
+        connectionId: connection.id,
+        tokenVersion: connection.tokenVersion + 1,
+        resultCode: 'succeeded',
+      });
+      return {
+        connectionId: connection.id,
+        accessToken: replacement.accessToken,
+        tokenVersion: connection.tokenVersion + 1,
+      };
+    });
+  }
+
+  private async loadWinningAccessContext(
+    connectionId: number
+  ): Promise<TraktAccessContext> {
+    const winner = await this.findConnectionWithTokensById(connectionId);
+    if (!winner) {
+      throw new Error('Trakt connection not found');
+    }
+    return this.toAccessContext(winner);
+  }
+
+  private findConnectionWithTokensByUserId(
+    userId: number
+  ): Promise<TraktConnection | null> {
+    return getRepository(TraktConnection)
+      .createQueryBuilder('connection')
+      .addSelect(['connection.accessToken', 'connection.refreshToken'])
+      .where('connection.userId = :userId', { userId })
+      .getOne();
+  }
+
+  private findConnectionWithTokensById(
+    connectionId: number
+  ): Promise<TraktConnection | null> {
+    return getRepository(TraktConnection)
+      .createQueryBuilder('connection')
+      .addSelect(['connection.accessToken', 'connection.refreshToken'])
+      .where('connection.id = :connectionId', { connectionId })
+      .getOne();
+  }
+
+  private toAccessContext(connection: TraktConnection): TraktAccessContext {
+    if (
+      connection.status !== TraktConnectionStatus.ACTIVE ||
+      !connection.accessToken
+    ) {
+      throw new Error('Trakt connection requires reconnection');
+    }
+    return {
+      connectionId: connection.id,
+      accessToken: connection.accessToken,
+      tokenVersion: connection.tokenVersion,
+    };
+  }
+
+  private apiFor(accessToken?: string): TraktAPI {
+    const settings = getSettings().trakt;
+    if (!isTraktConfigured(settings)) {
+      throw new Error('Trakt application is not configured');
+    }
+    return new TraktAPI(
+      settings.clientId.trim(),
+      settings.clientSecret,
+      accessToken
+    );
+  }
+
+  private async markValidated(context: TraktAccessContext): Promise<void> {
+    await getRepository(TraktConnection).update(
+      {
+        id: context.connectionId,
+        tokenVersion: context.tokenVersion,
+        status: TraktConnectionStatus.ACTIVE,
+      },
+      { lastValidatedAt: new Date() }
+    );
+  }
+
+  private isUnauthorized(error: unknown): error is TraktApiError {
+    return error instanceof TraktApiError && error.status === 401;
+  }
+
+  private rememberRateLimit(connectionId: number, error: unknown): void {
+    if (
+      !(error instanceof TraktApiError) ||
+      error.status !== 429 ||
+      error.retryAfterSeconds === undefined
+    ) {
+      return;
+    }
+    this.cooldownUntil.set(
+      connectionId,
+      Date.now() + error.retryAfterSeconds * 1000
+    );
+  }
+
+  private throwIfCoolingDown(connectionId: number): void {
+    const deadline = this.cooldownUntil.get(connectionId);
+    if (deadline === undefined) {
+      return;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      this.cooldownUntil.delete(connectionId);
+      return;
+    }
+    throw new TraktApiError(
+      'Trakt rate limit exceeded',
+      429,
+      'RATE_LIMITED',
+      Math.ceil(remainingMs / 1000)
+    );
+  }
+
   private async failProcessingTransaction(
     transactionId: string,
     resultCode: TraktSafeResultCode
@@ -643,7 +928,7 @@ export class TraktConnectionService {
     const cache = cacheManager.getCache('trakt-watch-status').data;
     const keys = cache
       .keys()
-      .filter((key) => key.startsWith(`${connectionId}:`));
+      .filter((key) => key.startsWith(`connection:${connectionId}:`));
     if (keys.length > 0) {
       cache.del(keys);
     }

@@ -1,4 +1,4 @@
-import TraktAPI from '@server/api/trakt';
+import TraktAPI, { TraktApiError } from '@server/api/trakt';
 import dataSource, { getRepository } from '@server/datasource';
 import {
   TraktConnection,
@@ -31,6 +31,51 @@ const allowedOrigin = 'https://overseerr.pixeltrophies.com';
 const users = () => getRepository(User);
 const transactions = () => getRepository(TraktOAuthTransaction);
 const connections = () => getRepository(TraktConnection);
+
+const connectionWithTokens = async (
+  userId: number,
+  input: {
+    expiresAt?: Date;
+    tokenVersion?: number;
+    accessToken?: string;
+    refreshToken?: string;
+  } = {}
+) =>
+  connections().save(
+    connections().create({
+      userId,
+      traktUserId: `trakt-${userId}`,
+      status: TraktConnectionStatus.ACTIVE,
+      accessToken: input.accessToken ?? 'old-access-token',
+      refreshToken: input.refreshToken ?? 'old-refresh-token',
+      expiresAt: input.expiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000),
+      tokenVersion: input.tokenVersion ?? 3,
+      connectedByUserId: userId,
+    })
+  );
+
+const connectionWithHiddenTokens = (id: number) =>
+  connections()
+    .createQueryBuilder('connection')
+    .addSelect(['connection.accessToken', 'connection.refreshToken'])
+    .where('connection.id = :id', { id })
+    .getOneOrFail();
+
+const mockProfileByAccessToken = () =>
+  mock.method(
+    TraktAPI.prototype,
+    'getProfile',
+    async function (this: TraktAPI) {
+      const accessToken = (this as unknown as { accessToken?: string })
+        .accessToken;
+      return {
+        traktUserId: '101',
+        username: accessToken ?? null,
+        slug: 'trakt-user',
+        displayName: 'Trakt User',
+      };
+    }
+  );
 
 const admin = () =>
   users().findOneByOrFail({
@@ -720,9 +765,9 @@ describe('TraktConnectionService', () => {
       })
     );
     const cache = cacheManager.getCache('trakt-watch-status').data;
-    cache.set(`${existing.id}:movie:1`, true);
-    cache.set(`${existing.id}:tv:2`, true);
-    cache.set(`${existing.id + 1}:movie:1`, true);
+    cache.set(`connection:${existing.id}:version:1:movie:1`, true);
+    cache.set(`connection:${existing.id}:version:1:tv:2`, true);
+    cache.set(`connection:${existing.id + 1}:version:1:movie:1`, true);
     const service = new TraktConnectionService();
     const start = await service.startAuthorization({
       actorUserId: actor.id,
@@ -736,9 +781,15 @@ describe('TraktConnectionService', () => {
       code: 'oauth-code',
     });
 
-    assert.equal(cache.has(`${existing.id}:movie:1`), false);
-    assert.equal(cache.has(`${existing.id}:tv:2`), false);
-    assert.equal(cache.has(`${existing.id + 1}:movie:1`), true);
+    assert.equal(
+      cache.has(`connection:${existing.id}:version:1:movie:1`),
+      false
+    );
+    assert.equal(cache.has(`connection:${existing.id}:version:1:tv:2`), false);
+    assert.equal(
+      cache.has(`connection:${existing.id + 1}:version:1:movie:1`),
+      true
+    );
   });
 
   it('retries a real unique-constraint race and completes canonically', async () => {
@@ -822,5 +873,505 @@ describe('TraktConnectionService', () => {
       .getOneOrFail();
     assert.equal(connection.accessToken, 'new-access-token');
     assert.equal(connection.tokenVersion, 2);
+  });
+
+  it('single-flights an expiring token refresh and atomically rotates both tokens', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id, {
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+    const service = new TraktConnectionService();
+    let signalRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshStarted = resolve;
+    });
+    let releaseRefresh!: () => void;
+    const refreshBlocked = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let refreshCalls = 0;
+    let suppliedRefreshToken: string | undefined;
+    mock.method(TraktAPI.prototype, 'refresh', async (refreshToken: string) => {
+      refreshCalls += 1;
+      suppliedRefreshToken = refreshToken;
+      signalRefreshStarted();
+      await refreshBlocked;
+      return {
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      };
+    });
+    mockProfileByAccessToken();
+
+    const first = service.withAuthenticatedApi(actor.id, (api) =>
+      api.getProfile()
+    );
+    const second = service.withAuthenticatedApi(actor.id, (api) =>
+      api.getProfile()
+    );
+    await refreshStarted;
+    releaseRefresh();
+
+    const results = await Promise.all([first, second]);
+    const stored = await connectionWithHiddenTokens(connection.id);
+    assert.deepEqual(
+      results.map((profile) => profile.username),
+      ['replacement-access-token', 'replacement-access-token']
+    );
+    assert.equal(refreshCalls, 1);
+    assert.equal(suppliedRefreshToken, 'old-refresh-token');
+    assert.equal(stored.accessToken, 'replacement-access-token');
+    assert.equal(stored.refreshToken, 'replacement-refresh-token');
+    assert.equal(stored.tokenVersion, 4);
+    assert.equal(stored.status, TraktConnectionStatus.ACTIVE);
+  });
+
+  it('refreshes at the exact sixty-second boundary and invalidates only that connection cache prefix', async () => {
+    const actor = await admin();
+    const friendUser = await friend();
+    const now = Date.parse('2030-01-01T00:00:00.000Z');
+    mock.method(Date, 'now', () => now);
+    const connection = await connectionWithTokens(actor.id, {
+      expiresAt: new Date(now + 60_000),
+    });
+    const other = await connectionWithTokens(friendUser.id);
+    const cache = cacheManager.getCache('trakt-watch-status').data;
+    const affectedKey = `connection:${connection.id}:version:3:movie:101`;
+    const otherKey = `connection:${other.id}:version:3:movie:101`;
+    cache.set(affectedKey, true);
+    cache.set(otherKey, true);
+    let refreshCalls = 0;
+    mock.method(TraktAPI.prototype, 'refresh', async () => {
+      refreshCalls += 1;
+      return {
+        accessToken: 'boundary-access-token',
+        refreshToken: 'boundary-refresh-token',
+        expiresAt: new Date(now + 3_600_000),
+      };
+    });
+    mockProfileByAccessToken();
+
+    const profile = await new TraktConnectionService().withAuthenticatedApi(
+      actor.id,
+      (api) => api.getProfile()
+    );
+
+    assert.equal(profile.username, 'boundary-access-token');
+    assert.equal(refreshCalls, 1);
+    assert.equal(cache.has(affectedKey), false);
+    assert.equal(cache.has(otherKey), true);
+  });
+
+  it('does not let a stale refresh success overwrite a newer reconnect', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id, {
+      expiresAt: new Date(Date.now() - 1),
+    });
+    let signalRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshStarted = resolve;
+    });
+    let releaseRefresh!: () => void;
+    const refreshBlocked = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    mock.method(TraktAPI.prototype, 'refresh', async () => {
+      signalRefreshStarted();
+      await refreshBlocked;
+      return {
+        accessToken: 'stale-access-token',
+        refreshToken: 'stale-refresh-token',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      };
+    });
+    mockProfileByAccessToken();
+    const request = new TraktConnectionService().withAuthenticatedApi(
+      actor.id,
+      (api) => api.getProfile()
+    );
+    await refreshStarted;
+    await connections().update(
+      { id: connection.id, tokenVersion: 3 },
+      {
+        accessToken: 'reconnected-access-token',
+        refreshToken: 'reconnected-refresh-token',
+        expiresAt: new Date(Date.now() + 7_200_000),
+        tokenVersion: 4,
+        status: TraktConnectionStatus.ACTIVE,
+      }
+    );
+    releaseRefresh();
+
+    const profile = await request;
+    const stored = await connectionWithHiddenTokens(connection.id);
+    assert.equal(profile.username, 'reconnected-access-token');
+    assert.equal(stored.accessToken, 'reconnected-access-token');
+    assert.equal(stored.refreshToken, 'reconnected-refresh-token');
+    assert.equal(stored.tokenVersion, 4);
+  });
+
+  it('does not let a stale invalid-refresh failure disconnect a newer reconnect', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id, {
+      expiresAt: new Date(Date.now() - 1),
+    });
+    let signalRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshStarted = resolve;
+    });
+    let rejectRefresh!: () => void;
+    const refreshResult = new Promise<never>((_resolve, reject) => {
+      rejectRefresh = () =>
+        reject(
+          new TraktApiError('Trakt authentication failed', 401, 'UNAUTHORIZED')
+        );
+    });
+    mock.method(TraktAPI.prototype, 'refresh', async () => {
+      signalRefreshStarted();
+      return refreshResult;
+    });
+    mockProfileByAccessToken();
+    const request = new TraktConnectionService().withAuthenticatedApi(
+      actor.id,
+      (api) => api.getProfile()
+    );
+    await refreshStarted;
+    await connections().update(
+      { id: connection.id, tokenVersion: 3 },
+      {
+        accessToken: 'reconnected-access-token',
+        refreshToken: 'reconnected-refresh-token',
+        expiresAt: new Date(Date.now() + 7_200_000),
+        tokenVersion: 4,
+        status: TraktConnectionStatus.ACTIVE,
+      }
+    );
+    rejectRefresh();
+
+    const profile = await request;
+    const stored = await connectionWithHiddenTokens(connection.id);
+    assert.equal(profile.username, 'reconnected-access-token');
+    assert.equal(stored.status, TraktConnectionStatus.ACTIVE);
+    assert.equal(stored.accessToken, 'reconnected-access-token');
+    assert.equal(stored.tokenVersion, 4);
+  });
+
+  it('refreshes and replays exactly once after an authenticated 401', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id);
+    let profileCalls = 0;
+    mock.method(
+      TraktAPI.prototype,
+      'getProfile',
+      async function (this: TraktAPI) {
+        profileCalls += 1;
+        if (profileCalls === 1) {
+          throw new TraktApiError(
+            'Trakt authentication failed',
+            401,
+            'UNAUTHORIZED'
+          );
+        }
+        const accessToken = (this as unknown as { accessToken?: string })
+          .accessToken;
+        return {
+          traktUserId: '101',
+          username: accessToken ?? null,
+          slug: null,
+          displayName: null,
+        };
+      }
+    );
+    let refreshCalls = 0;
+    mock.method(TraktAPI.prototype, 'refresh', async () => {
+      refreshCalls += 1;
+      return {
+        accessToken: 'replayed-access-token',
+        refreshToken: 'replayed-refresh-token',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      };
+    });
+
+    const before = Date.now();
+    const profile = await new TraktConnectionService().withAuthenticatedApi(
+      actor.id,
+      (api) => api.getProfile()
+    );
+    const stored = await connectionWithHiddenTokens(connection.id);
+    assert.equal(profile.username, 'replayed-access-token');
+    assert.equal(profileCalls, 2);
+    assert.equal(refreshCalls, 1);
+    assert.ok((stored.lastValidatedAt?.getTime() ?? 0) >= before);
+  });
+
+  it('does not refresh or replay a second 401 after the one allowed replay', async () => {
+    const actor = await admin();
+    await connectionWithTokens(actor.id);
+    let profileCalls = 0;
+    mock.method(TraktAPI.prototype, 'getProfile', async () => {
+      profileCalls += 1;
+      throw new TraktApiError(
+        'Trakt authentication failed',
+        401,
+        'UNAUTHORIZED'
+      );
+    });
+    let refreshCalls = 0;
+    mock.method(TraktAPI.prototype, 'refresh', async () => {
+      refreshCalls += 1;
+      return {
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      };
+    });
+
+    await assert.rejects(
+      new TraktConnectionService().withAuthenticatedApi(actor.id, (api) =>
+        api.getProfile()
+      ),
+      (error: unknown) =>
+        error instanceof TraktApiError && error.code === 'UNAUTHORIZED'
+    );
+    assert.equal(profileCalls, 2);
+    assert.equal(refreshCalls, 1);
+  });
+
+  it('clears tokens only for a current invalid refresh and invalidates its cache entries', async () => {
+    const actor = await admin();
+    const friendUser = await friend();
+    const connection = await connectionWithTokens(actor.id, {
+      expiresAt: new Date(Date.now() - 1),
+    });
+    const other = await connectionWithTokens(friendUser.id);
+    const cache = cacheManager.getCache('trakt-watch-status').data;
+    const affectedKey = `connection:${connection.id}:version:3:tv:202`;
+    const otherKey = `connection:${other.id}:version:3:tv:202`;
+    cache.set(affectedKey, true);
+    cache.set(otherKey, true);
+    let refreshCalls = 0;
+    mock.method(TraktAPI.prototype, 'refresh', async () => {
+      refreshCalls += 1;
+      throw new TraktApiError(
+        'Trakt authentication failed',
+        401,
+        'UNAUTHORIZED'
+      );
+    });
+    let operationCalls = 0;
+
+    await assert.rejects(
+      new TraktConnectionService().withAuthenticatedApi(actor.id, async () => {
+        operationCalls += 1;
+        return 'unreachable';
+      }),
+      (error: unknown) =>
+        error instanceof TraktApiError && error.code === 'UNAUTHORIZED'
+    );
+
+    const stored = await connectionWithHiddenTokens(connection.id);
+    assert.equal(refreshCalls, 1);
+    assert.equal(operationCalls, 0);
+    assert.equal(stored.status, TraktConnectionStatus.RECONNECT_REQUIRED);
+    assert.equal(stored.accessToken, null);
+    assert.equal(stored.refreshToken, null);
+    assert.equal(stored.expiresAt, null);
+    assert.equal(stored.tokenVersion, 4);
+    assert.equal(cache.has(affectedKey), false);
+    assert.equal(cache.has(otherKey), true);
+  });
+
+  it('records a per-connection Retry-After cooldown and removes it after expiry', async () => {
+    const actor = await admin();
+    let now = Date.parse('2030-01-01T00:00:00.000Z');
+    mock.method(Date, 'now', () => now);
+    const connection = await connectionWithTokens(actor.id);
+    let operationCalls = 0;
+    const service = new TraktConnectionService();
+    const operation = async () => {
+      operationCalls += 1;
+      if (operationCalls === 1) {
+        throw new TraktApiError(
+          'Trakt rate limit exceeded',
+          429,
+          'RATE_LIMITED',
+          5
+        );
+      }
+      return 'available';
+    };
+
+    await assert.rejects(
+      service.withAuthenticatedApi(actor.id, operation),
+      (error: unknown) =>
+        error instanceof TraktApiError &&
+        error.code === 'RATE_LIMITED' &&
+        error.retryAfterSeconds === 5
+    );
+    await assert.rejects(
+      service.withAuthenticatedApi(actor.id, operation),
+      (error: unknown) =>
+        error instanceof TraktApiError &&
+        error.code === 'RATE_LIMITED' &&
+        error.retryAfterSeconds === 5
+    );
+    assert.equal(operationCalls, 1);
+    assert.equal(
+      (await connectionWithHiddenTokens(connection.id)).status,
+      TraktConnectionStatus.ACTIVE
+    );
+
+    now += 5_001;
+    assert.equal(
+      await service.withAuthenticatedApi(actor.id, operation),
+      'available'
+    );
+    assert.equal(operationCalls, 2);
+  });
+
+  it('preserves connection tokens when refresh gets network and upstream failures', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id, {
+      expiresAt: new Date(Date.now() - 1),
+    });
+    const service = new TraktConnectionService();
+    let failure!: TraktApiError;
+    let refreshCalls = 0;
+    mock.method(TraktAPI.prototype, 'refresh', async () => {
+      refreshCalls += 1;
+      throw failure;
+    });
+
+    for (const error of [
+      new TraktApiError('Trakt network request failed', 0, 'NETWORK_ERROR'),
+      new TraktApiError(
+        'Trakt service temporarily unavailable',
+        503,
+        'UPSTREAM_ERROR'
+      ),
+    ]) {
+      failure = error;
+      await assert.rejects(
+        service.withAuthenticatedApi(actor.id, async () => 'unreachable'),
+        error
+      );
+      const stored = await connectionWithHiddenTokens(connection.id);
+      assert.equal(stored.status, TraktConnectionStatus.ACTIVE);
+      assert.equal(stored.accessToken, 'old-access-token');
+      assert.equal(stored.refreshToken, 'old-refresh-token');
+      assert.equal(stored.tokenVersion, 3);
+    }
+    assert.equal(refreshCalls, 2);
+  });
+
+  it('revokes before unlinking and reports remote success', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id);
+    let revokedToken: string | undefined;
+    mock.method(TraktAPI.prototype, 'revoke', async (token: string) => {
+      revokedToken = token;
+    });
+
+    const result = await new TraktConnectionService().unlink(actor.id);
+
+    assert.deepEqual(result, { remoteRevocationSucceeded: true });
+    assert.equal(revokedToken, 'old-access-token');
+    assert.equal(await connections().countBy({ id: connection.id }), 0);
+  });
+
+  it('deletes locally and invalidates only its cache when remote revocation fails', async () => {
+    const actor = await admin();
+    const friendUser = await friend();
+    const connection = await connectionWithTokens(actor.id);
+    const other = await connectionWithTokens(friendUser.id);
+    const cache = cacheManager.getCache('trakt-watch-status').data;
+    const affectedKey = `connection:${connection.id}:version:3:movie:303`;
+    const otherKey = `connection:${other.id}:version:3:movie:303`;
+    cache.set(affectedKey, true);
+    cache.set(otherKey, true);
+    mock.method(TraktAPI.prototype, 'revoke', async () => {
+      throw new TraktApiError(
+        'Trakt service temporarily unavailable',
+        503,
+        'UPSTREAM_ERROR'
+      );
+    });
+
+    const result = await new TraktConnectionService().unlink(actor.id);
+
+    assert.deepEqual(result, { remoteRevocationSucceeded: false });
+    assert.equal(await connections().countBy({ id: connection.id }), 0);
+    assert.equal(cache.has(affectedKey), false);
+    assert.equal(cache.has(otherKey), true);
+  });
+
+  it('emits safe structured refresh, reconnect-required, and unlink logs', async () => {
+    const actor = await admin();
+    const entries: unknown[] = [];
+    const listener = (entry: unknown) => entries.push(entry);
+    const wasSilent = logger.silent;
+    logger.silent = false;
+    logger.on('data', listener);
+
+    try {
+      await connectionWithTokens(actor.id, {
+        expiresAt: new Date(Date.now() - 1),
+        accessToken: 'secret-access-one',
+        refreshToken: 'secret-refresh-one',
+      });
+      mock.method(TraktAPI.prototype, 'refresh', async () => ({
+        accessToken: 'secret-access-two',
+        refreshToken: 'secret-refresh-two',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      }));
+      await new TraktConnectionService().withAuthenticatedApi(
+        actor.id,
+        async () => 'validated'
+      );
+      mock.restoreAll();
+
+      const refreshed = await connectionWithHiddenTokens(
+        (await connections().findOneByOrFail({ userId: actor.id })).id
+      );
+      await connections().update(refreshed.id, {
+        expiresAt: new Date(Date.now() - 1),
+      });
+      mock.method(TraktAPI.prototype, 'refresh', async () => {
+        throw new TraktApiError(
+          'Trakt authentication failed',
+          401,
+          'UNAUTHORIZED'
+        );
+      });
+      await assert.rejects(
+        new TraktConnectionService().withAuthenticatedApi(
+          actor.id,
+          async () => 'unreachable'
+        )
+      );
+      mock.restoreAll();
+
+      await connections().update(refreshed.id, {
+        status: TraktConnectionStatus.ACTIVE,
+        accessToken: 'secret-access-three',
+        refreshToken: 'secret-refresh-three',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+      mock.method(TraktAPI.prototype, 'revoke', async () => {
+        throw new Error('revoke failed with secret-access-three');
+      });
+      await new TraktConnectionService().unlink(actor.id);
+    } finally {
+      logger.off('data', listener);
+      logger.silent = wasSilent;
+    }
+
+    const serialized = JSON.stringify(entries);
+    assert.match(serialized, /token_refresh/);
+    assert.match(serialized, /reconnect_required/);
+    assert.match(serialized, /unlink/);
+    assert.doesNotMatch(serialized, /secret-access|secret-refresh/);
+    assert.doesNotMatch(serialized, /request|response/);
   });
 });
