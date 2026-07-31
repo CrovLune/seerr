@@ -3,8 +3,6 @@ import { seedTestDb } from '@server/utils/seedTestDb';
 import assert from 'node:assert/strict';
 import { before, describe, it } from 'node:test';
 
-process.env.TRAKT_MIGRATION_TEST = 'true';
-
 interface SqliteForeignKey {
   from: string;
   on_delete: string;
