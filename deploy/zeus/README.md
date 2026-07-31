@@ -75,6 +75,11 @@ docker buildx build \
 docker buildx imagetools inspect ghcr.io/crovlune/seerr:3.4.1-trakt.1
 ```
 
+The branch-only `Publish Zeus image` workflow performs the same build with a
+short-lived repository token when local GHCR credentials are unavailable. Its
+tag is only a discovery aid; use the digest recorded in the workflow summary
+and confirm it independently with `buildx imagetools inspect`.
+
 Record the inspected digest, not the tag, in the Zeus `.env` and validate it:
 
 ```bash
