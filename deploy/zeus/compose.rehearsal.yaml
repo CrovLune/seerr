@@ -1,0 +1,8 @@
+services:
+  seerr:
+    container_name: seerr-rehearsal
+    restart: 'no'
+    ports:
+      - 127.0.0.1:15055:5055
+    labels:
+      traefik.enable: 'false'

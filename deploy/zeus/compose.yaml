@@ -1,0 +1,51 @@
+services:
+  seerr:
+    image: ${SEERR_IMAGE:?Set SEERR_IMAGE to an immutable ghcr.io/crovlune/seerr image digest}
+    container_name: seerr
+    init: true
+    user: '1000:1000'
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Brussels
+      LOG_LEVEL: info
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/config/logs
+    networks:
+      - traefik
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:5055/api/v1/status/appdata
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      com.centurylinklabs.watchtower.enable: 'false'
+      traefik.enable: 'true'
+      traefik.docker.network: 'traefik'
+      traefik.http.services.seerr.loadbalancer.server.port: '5055'
+      traefik.http.services.seerr.loadbalancer.server.scheme: 'http'
+      traefik.http.routers.seerr-trakt-callback.rule: 'Host(`overseerr.pixeltrophies.com`) && Path(`/api/v1/auth/trakt/callback`)'
+      traefik.http.routers.seerr-trakt-callback.entrypoints: 'https'
+      traefik.http.routers.seerr-trakt-callback.priority: '300'
+      traefik.http.routers.seerr-trakt-callback.service: 'seerr'
+      traefik.http.routers.seerr-lan-redirect.rule: 'Host(`overseerr.pixeltrophies.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`2a02:578:855b:1700::/64`))'
+      traefik.http.routers.seerr-lan-redirect.entrypoints: 'https'
+      traefik.http.routers.seerr-lan-redirect.priority: '200'
+      traefik.http.routers.seerr-lan-redirect.middlewares: 'redirect-to-local@file'
+      traefik.http.routers.seerr-lan-redirect.service: 'seerr'
+      traefik.http.routers.seerr-public.rule: 'Host(`overseerr.pixeltrophies.com`)'
+      traefik.http.routers.seerr-public.entrypoints: 'https'
+      traefik.http.routers.seerr-public.priority: '100'
+      traefik.http.routers.seerr-public.service: 'seerr'
+      traefik.http.routers.seerr-local.rule: 'Host(`overseerr.local.pixeltrophies.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`2a02:578:855b:1700::/64`))'
+      traefik.http.routers.seerr-local.entrypoints: 'https'
+      traefik.http.routers.seerr-local.priority: '200'
+      traefik.http.routers.seerr-local.middlewares: 'ip-whitelist@file'
+      traefik.http.routers.seerr-local.service: 'seerr'
+
+networks:
+  traefik:
+    external: true
