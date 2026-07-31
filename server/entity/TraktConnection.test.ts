@@ -85,7 +85,7 @@ describe('Trakt persistence', () => {
           '17f165d5a5ba695f27c023a83aa2b346f69e455e443bc71f201727fdad53139f',
         actorUserId: admin.id,
         targetUserId: admin.id,
-        origin: 'https://overseerr.pixeltrophies.com',
+        origin: 'https://requests.example.com',
         expiresAt: new Date(Date.now() + 600_000),
       })
     );
@@ -116,7 +116,7 @@ describe('Trakt persistence', () => {
           'aa2c5e1f4f26fa6044ada4e1668fb7f1130b7e35052f51e9ad68a95c5e31947d',
         actorUserId: admin.id,
         targetUserId: friend.id,
-        origin: 'https://overseerr.pixeltrophies.com',
+        origin: 'https://requests.example.com',
         expiresAt: new Date(Date.now() + 600_000),
       })
     );
@@ -147,7 +147,7 @@ describe('Trakt persistence', () => {
           'f7d7a7d56ca27d9854e378e20958313ce992611d0f1b31a6bc294625f2c75285',
         actorUserId: admin.id,
         targetUserId: friend.id,
-        origin: 'https://overseerr.pixeltrophies.com',
+        origin: 'https://requests.example.com',
         expiresAt: new Date(Date.now() + 600_000),
       })
     );

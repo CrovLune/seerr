@@ -36,7 +36,7 @@ describe('Trakt linked account', () => {
       request.reply({
         transactionId: `self-${transaction}`,
         authorizationUrl: `https://trakt.tv/oauth/authorize?prompt=login&state=self-${transaction}`,
-        callbackOrigin: 'https://overseerr.pixeltrophies.com',
+        callbackOrigin: 'https://requests.example.com',
         expiresAt: '2026-07-31T11:00:00.000Z',
       });
     }).as('startSelfOAuth');

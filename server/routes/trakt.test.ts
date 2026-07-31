@@ -27,7 +27,7 @@ import path from 'path';
 import request from 'supertest';
 import routes from './index';
 
-const allowedOrigin = 'https://overseerr.pixeltrophies.com';
+const allowedOrigin = 'https://requests.example.com';
 let app: Express;
 let validatedApp: Express;
 
@@ -100,6 +100,7 @@ before(() => {
 
 beforeEach(() => {
   getSettings().main.localLogin = true;
+  getSettings().main.applicationUrl = allowedOrigin;
   getSettings().trakt = {
     clientId: 'client-id',
     clientSecret: 'client-secret',
@@ -318,8 +319,7 @@ describe('Trakt account routes', () => {
     assert.deepEqual(settings.body, {
       clientId: 'client-id',
       clientSecretConfigured: true,
-      callbackUrl:
-        'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback',
+      callbackUrl: 'https://requests.example.com/api/v1/auth/trakt/callback',
     });
     assert.equal(
       JSON.stringify(settings.body).includes('client-secret'),

@@ -1,7 +1,7 @@
 import type { AxiosInstance, AxiosRequestConfig } from 'axios';
 import axios from 'axios';
 
-import { getTraktCallbackUrl } from '@server/lib/trakt/config';
+import { requireTraktCallbackUrl } from '@server/lib/trakt/config';
 
 const TRAKT_AUTH_URL = 'https://auth.trakt.tv';
 const TRAKT_API_URL = 'https://api.trakt.tv';
@@ -79,7 +79,7 @@ export default class TraktAPI {
     const url = new URL('/oauth/authorize', TRAKT_AUTH_URL);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('client_id', this.clientId);
-    url.searchParams.set('redirect_uri', getTraktCallbackUrl());
+    url.searchParams.set('redirect_uri', requireTraktCallbackUrl());
     url.searchParams.set('state', state);
     url.searchParams.set('prompt', 'login');
 
@@ -94,7 +94,7 @@ export default class TraktAPI {
           code,
           client_id: this.clientId,
           client_secret: this.clientSecret,
-          redirect_uri: getTraktCallbackUrl(),
+          redirect_uri: requireTraktCallbackUrl(),
           grant_type: 'authorization_code',
         },
         { timeout: REQUEST_TIMEOUT }
@@ -114,7 +114,7 @@ export default class TraktAPI {
           refresh_token: refreshToken,
           client_id: this.clientId,
           client_secret: this.clientSecret,
-          redirect_uri: getTraktCallbackUrl(),
+          redirect_uri: requireTraktCallbackUrl(),
           grant_type: 'refresh_token',
         },
         { timeout: REQUEST_TIMEOUT }

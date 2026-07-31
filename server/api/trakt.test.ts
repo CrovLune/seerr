@@ -4,7 +4,10 @@ import { describe, it, mock } from 'node:test';
 import axios, { type AxiosInstance } from 'axios';
 
 import TraktAPI, { TraktApiError, type TraktProfile } from '@server/api/trakt';
-import { getTraktCallbackUrl } from '@server/lib/trakt/config';
+import { getSettings } from '@server/lib/settings';
+import { requireTraktCallbackUrl } from '@server/lib/trakt/config';
+
+getSettings().main.applicationUrl = 'https://requests.example.com';
 
 const CLIENT_ID = 'client-id';
 const CLIENT_SECRET = 'client-secret';
@@ -60,7 +63,7 @@ describe('TraktAPI OAuth protocol', () => {
     assert.equal(parsed.searchParams.get('client_id'), CLIENT_ID);
     assert.equal(
       parsed.searchParams.get('redirect_uri'),
-      getTraktCallbackUrl()
+      requireTraktCallbackUrl()
     );
     assert.equal(parsed.searchParams.get('state'), 'opaque-state');
     assert.equal(parsed.searchParams.get('prompt'), 'login');
@@ -90,7 +93,7 @@ describe('TraktAPI OAuth protocol', () => {
         code: 'authorization-code',
         client_id: CLIENT_ID,
         client_secret: CLIENT_SECRET,
-        redirect_uri: getTraktCallbackUrl(),
+        redirect_uri: requireTraktCallbackUrl(),
         grant_type: 'authorization_code',
       },
       { timeout: 10_000 },
@@ -166,7 +169,7 @@ describe('TraktAPI OAuth protocol', () => {
         refresh_token: 'refresh-token',
         client_id: CLIENT_ID,
         client_secret: CLIENT_SECRET,
-        redirect_uri: getTraktCallbackUrl(),
+        redirect_uri: requireTraktCallbackUrl(),
         grant_type: 'refresh_token',
       },
       { timeout: 10_000 },

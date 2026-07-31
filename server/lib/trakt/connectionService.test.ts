@@ -27,7 +27,7 @@ import { TraktConnectionService } from './connectionService';
 
 setupTestDb();
 
-const allowedOrigin = 'https://overseerr.pixeltrophies.com';
+const allowedOrigin = 'https://requests.example.com';
 
 const users = () => getRepository(User);
 const transactions = () => getRepository(TraktOAuthTransaction);
@@ -115,6 +115,7 @@ const mockSuccessfulTrakt = (
 };
 
 beforeEach(() => {
+  getSettings().main.applicationUrl = allowedOrigin;
   getSettings().trakt = {
     clientId: 'client-id',
     clientSecret: 'client-secret',
@@ -145,8 +146,7 @@ describe('TraktConnectionService', () => {
     assert.deepEqual(result, {
       clientId: 'initial-client',
       clientSecretConfigured: true,
-      callbackUrl:
-        'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback',
+      callbackUrl: 'https://requests.example.com/api/v1/auth/trakt/callback',
     });
     assert.equal(JSON.stringify(result).includes('initial-secret'), false);
   });

@@ -39,8 +39,7 @@ const interceptAdminData = () => {
   cy.intercept('GET', '/api/v1/settings/trakt', {
     clientId: 'saved-client-id',
     clientSecretConfigured: true,
-    callbackUrl:
-      'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback',
+    callbackUrl: 'https://requests.example.com/api/v1/auth/trakt/callback',
   }).as('traktSettings');
   cy.intercept(
     {
@@ -106,8 +105,7 @@ describe('Trakt administration', () => {
       request.reply({
         clientId: 'saved-client-id',
         clientSecretConfigured: true,
-        callbackUrl:
-          'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback',
+        callbackUrl: 'https://requests.example.com/api/v1/auth/trakt/callback',
       });
     }).as('saveSecret');
     cy.get('#trakt-client-secret').type('replacement-secret');
@@ -133,8 +131,7 @@ describe('Trakt administration', () => {
       request.reply({
         clientId: 'new-client-id',
         clientSecretConfigured: true,
-        callbackUrl:
-          'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback',
+        callbackUrl: 'https://requests.example.com/api/v1/auth/trakt/callback',
       });
     }).as('changeClientId');
     cy.get('#trakt-client-id').clear().type('new-client-id');
@@ -171,7 +168,7 @@ describe('Trakt administration', () => {
       transactionId: 'active-reconnect',
       authorizationUrl:
         'https://trakt.tv/oauth/authorize?prompt=login&state=active-reconnect',
-      callbackOrigin: 'https://overseerr.pixeltrophies.com',
+      callbackOrigin: 'https://requests.example.com',
       expiresAt: '2026-07-31T11:00:00.000Z',
     }).as('startActiveReconnect');
     cy.intercept('GET', '/api/v1/trakt/oauth/active-reconnect/status', {
@@ -182,7 +179,7 @@ describe('Trakt administration', () => {
       transactionId: 'housemate-connect',
       authorizationUrl:
         'https://trakt.tv/oauth/authorize?prompt=login&state=housemate-connect',
-      callbackOrigin: 'https://overseerr.pixeltrophies.com',
+      callbackOrigin: 'https://requests.example.com',
       expiresAt: '2026-07-31T11:00:00.000Z',
     }).as('startHousemateConnect');
     cy.intercept('GET', '/api/v1/trakt/oauth/housemate-connect/status', {
@@ -270,7 +267,7 @@ describe('Trakt administration', () => {
         transactionId: 'transaction-3',
         authorizationUrl:
           'https://trakt.tv/oauth/authorize?client_id=saved-client-id&prompt=login&state=transaction-3',
-        callbackOrigin: 'https://overseerr.pixeltrophies.com',
+        callbackOrigin: 'https://requests.example.com',
         expiresAt: '2026-07-31T11:00:00.000Z',
       });
     }).as('startOAuth');
@@ -336,7 +333,7 @@ describe('Trakt administration', () => {
       );
       win.dispatchEvent(
         new MessageEvent('message', {
-          origin: 'https://overseerr.pixeltrophies.com',
+          origin: 'https://requests.example.com',
           data: {
             type: 'not-trakt',
             transactionId: 'transaction-3',
@@ -345,7 +342,7 @@ describe('Trakt administration', () => {
       );
       win.dispatchEvent(
         new MessageEvent('message', {
-          origin: 'https://overseerr.pixeltrophies.com',
+          origin: 'https://requests.example.com',
           data: {
             type: 'trakt-oauth-result',
             transactionId: 'wrong-transaction',
@@ -357,7 +354,7 @@ describe('Trakt administration', () => {
     cy.window().then((win) => {
       win.dispatchEvent(
         new MessageEvent('message', {
-          origin: 'https://overseerr.pixeltrophies.com',
+          origin: 'https://requests.example.com',
           data: {
             type: 'trakt-oauth-result',
             transactionId: 'transaction-3',
@@ -367,7 +364,7 @@ describe('Trakt administration', () => {
       );
       win.dispatchEvent(
         new MessageEvent('message', {
-          origin: 'https://overseerr.pixeltrophies.com',
+          origin: 'https://requests.example.com',
           data: {
             type: 'trakt-oauth-result',
             transactionId: 'transaction-3',
@@ -419,7 +416,7 @@ describe('Trakt administration', () => {
       transactionId: 'callback-close',
       authorizationUrl:
         'https://trakt.tv/oauth/authorize?prompt=login&state=callback-close',
-      callbackOrigin: 'https://overseerr.pixeltrophies.com',
+      callbackOrigin: 'https://requests.example.com',
       expiresAt: '2026-07-31T11:00:00.000Z',
     }).as('startCallbackOAuth');
     cy.intercept(
@@ -451,7 +448,7 @@ describe('Trakt administration', () => {
       win.setTimeout(() => {
         win.dispatchEvent(
           new MessageEvent('message', {
-            origin: 'https://overseerr.pixeltrophies.com',
+            origin: 'https://requests.example.com',
             data: {
               type: 'trakt-oauth-result',
               transactionId: 'callback-close',
@@ -533,7 +530,7 @@ describe('Trakt administration', () => {
       request.reply({
         transactionId: `lifecycle-${transaction}`,
         authorizationUrl: `https://trakt.tv/oauth/authorize?prompt=login&state=lifecycle-${transaction}`,
-        callbackOrigin: 'https://overseerr.pixeltrophies.com',
+        callbackOrigin: 'https://requests.example.com',
         expiresAt: '2026-07-31T11:00:00.000Z',
       });
     }).as('startLifecycleOAuth');
@@ -566,7 +563,7 @@ describe('Trakt administration', () => {
       cy.window().then((win) => {
         win.dispatchEvent(
           new MessageEvent('message', {
-            origin: 'https://overseerr.pixeltrophies.com',
+            origin: 'https://requests.example.com',
             data: {
               type: 'trakt-oauth-result',
               transactionId: 'lifecycle-1',
@@ -610,7 +607,7 @@ describe('Trakt administration', () => {
       request.reply({
         transactionId: `conflict-${transaction}`,
         authorizationUrl: `https://trakt.tv/oauth/authorize?prompt=login&state=conflict-${transaction}`,
-        callbackOrigin: 'https://overseerr.pixeltrophies.com',
+        callbackOrigin: 'https://requests.example.com',
         expiresAt: '2026-07-31T11:00:00.000Z',
       });
     });

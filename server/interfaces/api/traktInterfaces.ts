@@ -1,7 +1,7 @@
 export interface TraktPublicSettings {
   clientId: string;
   clientSecretConfigured: boolean;
-  callbackUrl: string;
+  callbackUrl: string | null;
 }
 
 export interface TraktSettingsUpdate {
@@ -11,8 +11,8 @@ export interface TraktSettingsUpdate {
 }
 
 /**
- * The allowlist is configuration rather than a fixed set, so membership is decided at
- * runtime by `isAllowedTraktOrigin` instead of by this type.
+ * Membership depends on the configured application URL, so it is decided at runtime by
+ * `isAllowedTraktOrigin` rather than by a fixed union.
  */
 export type TraktAllowedOrigin = string;
 
