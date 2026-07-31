@@ -24,6 +24,7 @@ import RequestButton from '@app/components/RequestButton';
 import RequestModal from '@app/components/RequestModal';
 import Slider from '@app/components/Slider';
 import StatusBadge from '@app/components/StatusBadge';
+import TraktWatchStatus from '@app/components/TraktWatchStatus';
 import Season from '@app/components/TvDetails/Season';
 import useDeepLinks from '@app/hooks/useDeepLinks';
 import useLocale from '@app/hooks/useLocale';
@@ -1313,6 +1314,7 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
                 </span>
               </div>
             )}
+            <TraktWatchStatus mediaType="tv" tmdbId={data.id} />
             <div className="media-fact">
               <ExternalLinkBlock
                 mediaType="tv"
