@@ -199,6 +199,7 @@ describe('TraktAPI API protocol', () => {
       },
     }));
 
+    assert.equal(client.didValidateAccessToken(), false);
     const profile: TraktProfile = await client.getProfile();
 
     assert.deepEqual(profile, {
@@ -209,6 +210,7 @@ describe('TraktAPI API protocol', () => {
     });
     assert.equal(get.mock.calls[0]!.arguments[0], '/users/me');
     assertApiRequest(get.mock.calls[0]!.arguments[1]);
+    assert.equal(client.didValidateAccessToken(), true);
   });
 
   it('rejects a profile without a stable Trakt ID', async () => {
@@ -268,6 +270,7 @@ describe('TraktAPI API protocol', () => {
       type: 'movie',
     });
     assertApiRequest(get.mock.calls[0]!.arguments[1], controller.signal);
+    assert.equal(client.didValidateAccessToken(), false);
   });
 
   it('maps TV by TMDB ID using only the show result ID', async () => {
@@ -309,6 +312,7 @@ describe('TraktAPI API protocol', () => {
     });
     assert.equal(get.mock.calls[0]!.arguments[0], '/sync/history/movies/123');
     assertApiRequest(get.mock.calls[0]!.arguments[1]);
+    assert.equal(client.didValidateAccessToken(), true);
   });
 
   it('uses the show history endpoint and maps empty history to not watched', async () => {

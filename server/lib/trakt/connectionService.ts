@@ -48,6 +48,7 @@ const RETENTION_MS = 24 * 60 * 60 * 1000;
 const REFRESH_WINDOW_MS = 60 * 1000;
 
 const refreshCoordinator = new TraktRefreshCoordinator();
+const cooldownUntil = new Map<number, number>();
 
 const safeResultCodes = new Set<TraktSafeResultCode>([
   'access_denied',
@@ -112,8 +113,6 @@ class TerminalTransactionError extends Error {
 }
 
 export class TraktConnectionService {
-  private readonly cooldownUntil = new Map<number, number>();
-
   public startAuthorization(input: {
     actorUserId: number;
     targetUserId: number;
@@ -425,9 +424,7 @@ export class TraktConnectionService {
     }
 
     try {
-      const result = await operation(this.apiFor(context.accessToken));
-      await this.markValidated(context);
-      return result;
+      return await this.runAuthenticatedOperation(context, operation);
     } catch (error) {
       this.rememberRateLimit(context.connectionId, error);
       if (!this.isUnauthorized(error)) {
@@ -440,9 +437,7 @@ export class TraktConnectionService {
       context.tokenVersion
     );
     try {
-      const result = await operation(this.apiFor(replacement.accessToken));
-      await this.markValidated(replacement);
-      return result;
+      return await this.runAuthenticatedOperation(replacement, operation);
     } catch (error) {
       this.rememberRateLimit(replacement.connectionId, error);
       throw error;
@@ -466,7 +461,7 @@ export class TraktConnectionService {
       errorClass = error instanceof Error ? error.name : 'UnknownError';
     } finally {
       await getRepository(TraktConnection).delete({ id: connection.id });
-      this.cooldownUntil.delete(connection.id);
+      cooldownUntil.delete(connection.id);
       this.invalidateWatchStatus(connection.id);
     }
 
@@ -731,7 +726,7 @@ export class TraktConnectionService {
         replacement = await this.apiFor().refresh(connection.refreshToken);
       } catch (error) {
         this.rememberRateLimit(connection.id, error);
-        if (!this.isUnauthorized(error)) {
+        if (!this.isInvalidRefreshCredentials(error)) {
           throw error;
         }
 
@@ -852,6 +847,18 @@ export class TraktConnectionService {
     );
   }
 
+  private async runAuthenticatedOperation<T>(
+    context: TraktAccessContext,
+    operation: (api: TraktAPI) => Promise<T>
+  ): Promise<T> {
+    const api = this.apiFor(context.accessToken);
+    const result = await operation(api);
+    if (api.didValidateAccessToken()) {
+      await this.markValidated(context);
+    }
+    return result;
+  }
+
   private async markValidated(context: TraktAccessContext): Promise<void> {
     await getRepository(TraktConnection).update(
       {
@@ -867,6 +874,13 @@ export class TraktConnectionService {
     return error instanceof TraktApiError && error.status === 401;
   }
 
+  private isInvalidRefreshCredentials(error: unknown): error is TraktApiError {
+    return (
+      error instanceof TraktApiError &&
+      (error.status === 400 || error.status === 401)
+    );
+  }
+
   private rememberRateLimit(connectionId: number, error: unknown): void {
     if (
       !(error instanceof TraktApiError) ||
@@ -875,20 +889,20 @@ export class TraktConnectionService {
     ) {
       return;
     }
-    this.cooldownUntil.set(
+    cooldownUntil.set(
       connectionId,
       Date.now() + error.retryAfterSeconds * 1000
     );
   }
 
   private throwIfCoolingDown(connectionId: number): void {
-    const deadline = this.cooldownUntil.get(connectionId);
+    const deadline = cooldownUntil.get(connectionId);
     if (deadline === undefined) {
       return;
     }
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      this.cooldownUntil.delete(connectionId);
+      cooldownUntil.delete(connectionId);
       return;
     }
     throw new TraktApiError(

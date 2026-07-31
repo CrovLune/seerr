@@ -59,6 +59,8 @@ interface TraktHistoryEntry {
 }
 
 export default class TraktAPI {
+  private accessTokenValidated = false;
+
   public constructor(
     private readonly clientId: string,
     private readonly clientSecret: string,
@@ -148,12 +150,14 @@ export default class TraktAPI {
       );
       const profile = response.data;
 
-      return {
+      const result = {
         username: profile.username ?? null,
         slug: profile.ids?.slug ?? null,
         displayName: profile.name ?? null,
         traktUserId: this.getStableProfileId(profile),
       };
+      this.accessTokenValidated = true;
+      return result;
     } catch (error) {
       throw this.toApiError(error);
     }
@@ -203,10 +207,16 @@ export default class TraktAPI {
         return newest;
       }, null);
 
-      return watchedAt ? { watchedAt } : null;
+      const result = watchedAt ? { watchedAt } : null;
+      this.accessTokenValidated = true;
+      return result;
     } catch (error) {
       throw this.toApiError(error);
     }
+  }
+
+  public didValidateAccessToken(): boolean {
+    return this.accessTokenValidated;
   }
 
   private toTokenSet(
