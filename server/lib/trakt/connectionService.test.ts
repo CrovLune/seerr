@@ -128,6 +128,198 @@ afterEach(() => {
 });
 
 describe('TraktConnectionService', () => {
+  it('updates initial application credentials without reconnect confirmation and never returns the secret', async () => {
+    const actor = await admin();
+    getSettings().trakt.clientId = '';
+    getSettings().trakt.clientSecret = '';
+    mock.method(getSettings(), 'save', async () => undefined);
+
+    const result = await new TraktConnectionService().updateApplicationSettings(
+      actor.id,
+      {
+        clientId: '  initial-client  ',
+        clientSecret: 'initial-secret',
+      }
+    );
+
+    assert.deepEqual(result, {
+      clientId: 'initial-client',
+      clientSecretConfigured: true,
+      callbackUrl:
+        'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback',
+    });
+    assert.equal(JSON.stringify(result).includes('initial-secret'), false);
+  });
+
+  it('preserves connections for secret-only updates and rejects an explicitly empty secret', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id);
+    mock.method(getSettings(), 'save', async () => undefined);
+    const service = new TraktConnectionService();
+
+    await service.updateApplicationSettings(actor.id, {
+      clientId: ' client-id ',
+      clientSecret: 'replacement-secret',
+    });
+
+    const stored = await connectionWithHiddenTokens(connection.id);
+    assert.equal(stored.accessToken, 'old-access-token');
+    assert.equal(stored.refreshToken, 'old-refresh-token');
+    assert.equal(stored.tokenVersion, 3);
+    assert.equal(stored.status, TraktConnectionStatus.ACTIVE);
+    await assert.rejects(
+      service.updateApplicationSettings(actor.id, {
+        clientId: 'client-id',
+        clientSecret: '',
+      }),
+      /secret.*empty/i
+    );
+  });
+
+  it('requires confirmation for a client-ID change and safely invalidates every connection and OAuth transaction', async () => {
+    const actor = await admin();
+    const friendUser = await friend();
+    const first = await connectionWithTokens(actor.id, { tokenVersion: 2 });
+    const second = await connectionWithTokens(friendUser.id, {
+      tokenVersion: 9,
+    });
+    const service = new TraktConnectionService();
+    const pending = await service.startAuthorization({
+      actorUserId: actor.id,
+      targetUserId: actor.id,
+      origin: allowedOrigin,
+    });
+    const processing = await service.startAuthorization({
+      actorUserId: actor.id,
+      targetUserId: friendUser.id,
+      origin: allowedOrigin,
+    });
+    await transactions().update(processing.transactionId, {
+      status: TraktOAuthTransactionStatus.PROCESSING,
+    });
+    const cache = cacheManager.getCache('trakt-watch-status').data;
+    cache.set(`connection:${first.id}:version:2:movie:1`, true);
+    cache.set(`connection:${second.id}:version:9:tv:1`, true);
+    mock.method(getSettings(), 'save', async () => undefined);
+
+    await assert.rejects(
+      service.updateApplicationSettings(actor.id, {
+        clientId: 'replacement-client',
+      }),
+      /confirm.*reconnect/i
+    );
+    await service.updateApplicationSettings(actor.id, {
+      clientId: 'replacement-client',
+      confirmReconnectAll: true,
+    });
+
+    for (const [id, version] of [
+      [first.id, 3],
+      [second.id, 10],
+    ] as const) {
+      const stored = await connectionWithHiddenTokens(id);
+      assert.equal(stored.accessToken, null);
+      assert.equal(stored.refreshToken, null);
+      assert.equal(stored.expiresAt, null);
+      assert.equal(stored.tokenVersion, version);
+      assert.equal(stored.status, TraktConnectionStatus.RECONNECT_REQUIRED);
+    }
+    assert.equal(cache.keys().length, 0);
+    for (const id of [pending.transactionId, processing.transactionId]) {
+      const transaction = await transactions().findOneByOrFail({ id });
+      assert.equal(transaction.status, TraktOAuthTransactionStatus.FAILED);
+      assert.equal(transaction.resultCode, 'client_id_changed');
+      assert.ok(transaction.consumedAt);
+    }
+  });
+
+  it('keeps invalidated connections safe and restores in-memory credentials when settings persistence fails', async () => {
+    const actor = await admin();
+    const connection = await connectionWithTokens(actor.id);
+    mock.method(getSettings(), 'save', async () => {
+      throw new Error('disk unavailable');
+    });
+
+    await assert.rejects(
+      new TraktConnectionService().updateApplicationSettings(actor.id, {
+        clientId: 'replacement-client',
+        clientSecret: 'replacement-secret',
+        confirmReconnectAll: true,
+      }),
+      /disk unavailable/
+    );
+
+    assert.deepEqual(getSettings().trakt, {
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+    });
+    const stored = await connectionWithHiddenTokens(connection.id);
+    assert.equal(stored.accessToken, null);
+    assert.equal(stored.refreshToken, null);
+    assert.equal(stored.tokenVersion, 4);
+    assert.equal(stored.status, TraktConnectionStatus.RECONNECT_REQUIRED);
+  });
+
+  it('does not activate an old-client callback that finishes after a client-ID change', async () => {
+    const actor = await admin();
+    const service = new TraktConnectionService();
+    const start = await service.startAuthorization({
+      actorUserId: actor.id,
+      targetUserId: actor.id,
+      origin: allowedOrigin,
+    });
+    let exchangeStarted!: () => void;
+    const exchangeWasStarted = new Promise<void>((resolve) => {
+      exchangeStarted = resolve;
+    });
+    let releaseExchange!: () => void;
+    const exchangeCanFinish = new Promise<void>((resolve) => {
+      releaseExchange = resolve;
+    });
+    mock.method(TraktAPI.prototype, 'exchangeCode', async () => {
+      exchangeStarted();
+      await exchangeCanFinish;
+      return {
+        accessToken: 'old-client-access-token',
+        refreshToken: 'old-client-refresh-token',
+        expiresAt: new Date('2030-01-01T00:00:00.000Z'),
+      };
+    });
+    mock.method(TraktAPI.prototype, 'getProfile', async () => ({
+      traktUserId: 'old-client-profile',
+      username: 'old-client-user',
+      slug: 'old-client-user',
+      displayName: 'Old client user',
+    }));
+    mock.method(getSettings(), 'save', async () => undefined);
+
+    const completion = service.completeAuthorization({
+      state: rawStateFrom(start.authorizationUrl),
+      code: 'old-client-code',
+    });
+    await exchangeWasStarted;
+    await service.updateApplicationSettings(actor.id, {
+      clientId: 'replacement-client',
+      confirmReconnectAll: true,
+    });
+    releaseExchange();
+
+    assert.deepEqual(await completion, {
+      canNotifyOpener: true,
+      transactionId: start.transactionId,
+      origin: allowedOrigin,
+      status: 'failed',
+      resultCode: 'client_id_changed',
+      httpStatus: 400,
+    });
+    assert.equal(await connections().count(), 0);
+    const transaction = await transactions().findOneByOrFail({
+      id: start.transactionId,
+    });
+    assert.equal(transaction.status, TraktOAuthTransactionStatus.FAILED);
+    assert.equal(transaction.resultCode, 'client_id_changed');
+  });
+
   it('rejects an origin outside the production allowlist', async () => {
     const actor = await admin();
 

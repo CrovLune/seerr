@@ -17,12 +17,15 @@ import type {
   TraktAllowedOrigin,
   TraktAuthorizationResponse,
   TraktOAuthStatusResponse,
+  TraktPublicSettings,
   TraktSafeResultCode,
+  TraktSettingsUpdate,
 } from '@server/interfaces/api/traktInterfaces';
 import cacheManager from '@server/lib/cache';
 import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import {
+  getSafeTraktSettings,
   isAllowedTraktOrigin,
   isTraktConfigured,
 } from '@server/lib/trakt/config';
@@ -113,6 +116,103 @@ class TerminalTransactionError extends Error {
 }
 
 export class TraktConnectionService {
+  public updateApplicationSettings(
+    actorUserId: number,
+    update: TraktSettingsUpdate
+  ): Promise<TraktPublicSettings> {
+    return traktConfigurationMutex.run(async () => {
+      if (typeof update.clientId !== 'string') {
+        throw new Error('Trakt client ID is required');
+      }
+      if (
+        update.clientSecret !== undefined &&
+        update.clientSecret.length === 0
+      ) {
+        throw new Error('Trakt client secret must not be empty');
+      }
+
+      const settings = getSettings();
+      const previous = { ...settings.trakt };
+      const normalizedClientId = update.clientId.trim();
+      const clientIdChanged =
+        previous.clientId.trim().length > 0 &&
+        normalizedClientId !== previous.clientId.trim();
+
+      if (clientIdChanged && update.confirmReconnectAll !== true) {
+        throw new Error('Confirm reconnect all is required');
+      }
+
+      let affectedConnectionCount = 0;
+      if (clientIdChanged) {
+        const now = new Date();
+        await dataSource.transaction(async (manager) => {
+          const connectionResult = await manager
+            .getRepository(TraktConnection)
+            .createQueryBuilder()
+            .update(TraktConnection)
+            .set({
+              accessToken: null,
+              refreshToken: null,
+              expiresAt: null,
+              status: TraktConnectionStatus.RECONNECT_REQUIRED,
+              tokenVersion: () => '"tokenVersion" + 1',
+            })
+            .execute();
+          affectedConnectionCount = connectionResult.affected ?? 0;
+
+          await manager
+            .getRepository(TraktOAuthTransaction)
+            .createQueryBuilder()
+            .update(TraktOAuthTransaction)
+            .set({
+              status: TraktOAuthTransactionStatus.FAILED,
+              resultCode: 'client_id_changed',
+              consumedAt: now,
+            })
+            .where('"status" IN (:...statuses)', {
+              statuses: [
+                TraktOAuthTransactionStatus.PENDING,
+                TraktOAuthTransactionStatus.PROCESSING,
+              ],
+            })
+            .execute();
+        });
+        cacheManager.getCache('trakt-watch-status').flush();
+      }
+
+      try {
+        settings.trakt = {
+          clientId: normalizedClientId,
+          ...(update.clientSecret !== undefined && {
+            clientSecret: update.clientSecret,
+          }),
+        };
+        await settings.save();
+      } catch (error) {
+        settings.trakt.clientId = previous.clientId;
+        settings.trakt.clientSecret = previous.clientSecret;
+        logger.error('Trakt application settings update failed', {
+          label: 'Trakt',
+          operation: 'application_settings_persist_failed',
+          actorUserId,
+          affectedConnectionCount,
+          errorClass: error instanceof Error ? error.name : 'UnknownError',
+        });
+        throw error;
+      }
+
+      logger.info('Trakt application settings updated', {
+        label: 'Trakt',
+        operation: clientIdChanged
+          ? 'application_client_id_changed'
+          : 'application_settings_updated',
+        actorUserId,
+        affectedConnectionCount,
+      });
+      return getSafeTraktSettings(settings.trakt);
+    });
+  }
+
   public startAuthorization(input: {
     actorUserId: number;
     targetUserId: number;
