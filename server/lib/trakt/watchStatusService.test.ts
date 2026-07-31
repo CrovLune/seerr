@@ -1,5 +1,4 @@
-import type TraktAPI from '@server/api/trakt';
-import { TraktApiError } from '@server/api/trakt';
+import TraktAPI, { TraktApiError } from '@server/api/trakt';
 import { getRepository } from '@server/datasource';
 import {
   TraktConnection,
@@ -7,6 +6,7 @@ import {
 } from '@server/entity/TraktConnection';
 import { User } from '@server/entity/User';
 import cacheManager from '@server/lib/cache';
+import { getSettings } from '@server/lib/settings';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
 import { setupTestDb } from '@server/test/db';
 import assert from 'node:assert/strict';
@@ -27,6 +27,7 @@ async function saveConnection(
     status?: TraktConnectionStatus;
     tokenVersion?: number;
     username?: string;
+    expiresAt?: Date;
   } = {}
 ): Promise<TraktConnection> {
   return connections().save(
@@ -37,7 +38,7 @@ async function saveConnection(
       status: input.status ?? TraktConnectionStatus.ACTIVE,
       accessToken: 'secret-access-token',
       refreshToken: 'secret-refresh-token',
-      expiresAt: new Date(Date.now() + 60_000),
+      expiresAt: input.expiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000),
       tokenVersion: input.tokenVersion ?? 1,
     })
   );
@@ -57,17 +58,25 @@ async function saveUser(index: number): Promise<User> {
 function mockAuthenticatedApi(
   api: Pick<TraktAPI, 'findByTmdbId' | 'getWatchHistory'>
 ) {
+  mock.method(TraktAPI.prototype, 'findByTmdbId', api.findByTmdbId);
   return mock.method(
     TraktConnectionService.prototype,
     'withAuthenticatedApi',
     async (
       _userId: number,
       operation: (authenticatedApi: TraktAPI) => Promise<unknown>
-    ) => operation(api as TraktAPI)
+    ) =>
+      operation({
+        getWatchHistory: api.getWatchHistory,
+      } as unknown as TraktAPI)
   );
 }
 
 beforeEach(() => {
+  getSettings().trakt = {
+    clientId: 'client-id',
+    clientSecret: 'client-secret',
+  };
   cacheManager.getCache('trakt-media').flush();
   cacheManager.getCache('trakt-watch-status').flush();
 });
@@ -77,6 +86,133 @@ afterEach(() => {
 });
 
 describe('TraktWatchStatusService', () => {
+  it('does not couple shared mapping to one visible connection cooldown', async () => {
+    const viewer = await admin();
+    const other = await friend();
+    await saveConnection(viewer);
+    await saveConnection(other);
+    const connectionService = new TraktConnectionService();
+    await assert.rejects(
+      connectionService.withAuthenticatedApi(viewer.id, async () => {
+        throw new TraktApiError('limited', 429, 'RATE_LIMITED', 60);
+      }),
+      (error) => error instanceof TraktApiError && error.status === 429
+    );
+    let mappings = 0;
+    mock.method(
+      TraktAPI.prototype,
+      'findByTmdbId',
+      async function (this: TraktAPI) {
+        const accessToken = (this as unknown as { accessToken?: string })
+          .accessToken;
+        assert.equal(accessToken, undefined);
+        mappings += 1;
+        return 700;
+      }
+    );
+    mock.method(TraktAPI.prototype, 'getWatchHistory', async () => null);
+    mock.method(TraktAPI.prototype, 'revoke', async () => undefined);
+
+    try {
+      const result = await new TraktWatchStatusService().getWatchStatus({
+        viewer,
+        mediaType: 'movie',
+        tmdbId: 70,
+      });
+
+      assert.equal(mappings, 1);
+      assert.deepEqual(
+        result.items.map(({ userId, status }) => ({ userId, status })),
+        [
+          { userId: viewer.id, status: 'temporarily_unavailable' },
+          { userId: other.id, status: 'ok' },
+        ]
+      );
+    } finally {
+      await connectionService.unlink(viewer.id);
+    }
+  });
+
+  it('caches a refreshed connection result under the winning token version', async () => {
+    const viewer = await friend();
+    const connection = await saveConnection(viewer, {
+      tokenVersion: 7,
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+    cacheManager
+      .getCache('trakt-media')
+      .data.set('movie:81', { kind: 'hit', traktId: 808 });
+    let histories = 0;
+    mock.method(TraktAPI.prototype, 'refresh', async () => ({
+      accessToken: 'replacement-access-token',
+      refreshToken: 'replacement-refresh-token',
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    }));
+    mock.method(TraktAPI.prototype, 'getWatchHistory', async () => {
+      histories += 1;
+      return { watchedAt: '2026-07-31T10:00:00.000Z' };
+    });
+    const service = new TraktWatchStatusService();
+
+    await service.getWatchStatus({ viewer, mediaType: 'movie', tmdbId: 81 });
+    await service.getWatchStatus({ viewer, mediaType: 'movie', tmdbId: 81 });
+
+    assert.equal(histories, 1);
+    const stored = await connections().findOneByOrFail({ id: connection.id });
+    assert.equal(stored.tokenVersion, 8);
+    const cache = cacheManager.getCache('trakt-watch-status').data;
+    assert.equal(
+      cache.has(`connection:${connection.id}:version:8:movie:81`),
+      true
+    );
+    assert.equal(
+      cache.has(`connection:${connection.id}:version:7:movie:81`),
+      false
+    );
+  });
+
+  it('removes a cache write when the connection version changes during persistence', async () => {
+    const viewer = await friend();
+    const connection = await saveConnection(viewer, { tokenVersion: 4 });
+    cacheManager
+      .getCache('trakt-media')
+      .data.set('tv:82', { kind: 'hit', traktId: 820 });
+    mockAuthenticatedApi({
+      findByTmdbId: async () => 820,
+      getWatchHistory: async () => null,
+    });
+    const repository = connections();
+    const findCurrent = repository.findOne.bind(repository);
+    let versionReads = 0;
+    mock.method(
+      repository,
+      'findOne',
+      async (options: Parameters<typeof repository.findOne>[0]) => {
+        const current = await findCurrent(options);
+        versionReads += 1;
+        if (current && versionReads === 2) {
+          current.tokenVersion += 1;
+        }
+        return current;
+      }
+    );
+
+    const result = await new TraktWatchStatusService().getWatchStatus({
+      viewer,
+      mediaType: 'tv',
+      tmdbId: 82,
+    });
+
+    assert.equal(result.items[0].status, 'ok');
+    assert.equal(versionReads, 2);
+    assert.equal(
+      cacheManager
+        .getCache('trakt-watch-status')
+        .data.has(`connection:${connection.id}:version:4:tv:82`),
+      false
+    );
+  });
+
   it('caches a successful TMDB mapping for 24 hours', async () => {
     const viewer = await friend();
     await saveConnection(viewer);
@@ -223,6 +359,49 @@ describe('TraktWatchStatusService', () => {
     assert.deepEqual(deadlines, [10_000, 10_000]);
   });
 
+  it('aborts an in-flight lookup at an injected deadline', async () => {
+    const viewer = await friend();
+    await saveConnection(viewer);
+    cacheManager
+      .getCache('trakt-media')
+      .data.set('movie:41', { kind: 'hit', traktId: 410 });
+    let observedAbort = false;
+    mockAuthenticatedApi({
+      findByTmdbId: async () => 410,
+      getWatchHistory: async (_mediaType, _traktId, signal) =>
+        new Promise((_, reject) => {
+          assert.ok(signal);
+          signal.addEventListener(
+            'abort',
+            () => {
+              observedAbort = signal.aborted;
+              reject(signal.reason);
+            },
+            { once: true }
+          );
+        }),
+    });
+    const service = new TraktWatchStatusService(5);
+    const testDeadline = Symbol('test deadline');
+    let testTimer: NodeJS.Timeout | undefined;
+
+    const result = await Promise.race([
+      service.getWatchStatus({ viewer, mediaType: 'movie', tmdbId: 41 }),
+      new Promise<typeof testDeadline>((resolve) => {
+        testTimer = setTimeout(() => resolve(testDeadline), 200);
+      }),
+    ]);
+    if (testTimer) {
+      clearTimeout(testTimer);
+    }
+
+    if (result === testDeadline) {
+      assert.fail('lookup did not observe the injected abort deadline');
+    }
+    assert.equal(observedAbort, true);
+    assert.equal(result.items[0].status, 'temporarily_unavailable');
+  });
+
   it('shows all active household connections to ADMIN and only the viewer connection to ordinary users', async () => {
     const adminUser = await admin();
     const friendUser = await friend();
@@ -296,6 +475,7 @@ describe('TraktWatchStatusService', () => {
     await saveConnection(viewer);
     await saveConnection(other);
     const calls = new Map<number, number>();
+    mock.method(TraktAPI.prototype, 'findByTmdbId', async () => 33);
     mock.method(
       TraktConnectionService.prototype,
       'withAuthenticatedApi',
@@ -304,11 +484,6 @@ describe('TraktWatchStatusService', () => {
         operation: (authenticatedApi: TraktAPI) => Promise<unknown>
       ) => {
         calls.set(userId, (calls.get(userId) ?? 0) + 1);
-        if (calls.size === 1 && calls.get(userId) === 1) {
-          return operation({
-            findByTmdbId: async () => 33,
-          } as unknown as TraktAPI);
-        }
         if (userId === other.id) {
           throw new TraktApiError('limited', 429, 'RATE_LIMITED');
         }
@@ -336,7 +511,7 @@ describe('TraktWatchStatusService', () => {
     assert.equal(first.items[0].watched, true);
     assert.equal(first.items[1].status, 'temporarily_unavailable');
     assert.equal(first.items[1].watched, false);
-    assert.equal(calls.get(viewer.id), 2);
+    assert.equal(calls.get(viewer.id), 1);
     assert.equal(calls.get(other.id), 2);
     assert.deepEqual(second.items, first.items);
   });

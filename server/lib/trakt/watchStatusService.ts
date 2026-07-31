@@ -1,3 +1,4 @@
+import TraktAPI from '@server/api/trakt';
 import { getRepository } from '@server/datasource';
 import {
   TraktConnection,
@@ -10,6 +11,8 @@ import type {
 } from '@server/interfaces/api/traktInterfaces';
 import cacheManager from '@server/lib/cache';
 import { Permission } from '@server/lib/permissions';
+import { getSettings } from '@server/lib/settings';
+import { isTraktConfigured } from '@server/lib/trakt/config';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
 
 const LOOKUP_TIMEOUT_MS = 10_000;
@@ -48,6 +51,10 @@ async function mapWithConcurrency<T, R>(
 }
 
 export class TraktWatchStatusService {
+  public constructor(
+    private readonly lookupTimeoutMs: number = LOOKUP_TIMEOUT_MS
+  ) {}
+
   public async getWatchStatus(input: {
     viewer: User;
     mediaType: MediaType;
@@ -63,11 +70,7 @@ export class TraktWatchStatusService {
       return { ...response, items: [] };
     }
 
-    const mapping = await this.getMapping(
-      connections[0].userId,
-      input.mediaType,
-      input.tmdbId
-    );
+    const mapping = await this.getMapping(input.mediaType, input.tmdbId);
 
     if (mapping === 'temporarily_unavailable') {
       return {
@@ -138,7 +141,6 @@ export class TraktWatchStatusService {
   }
 
   private async getMapping(
-    userId: number,
     mediaType: MediaType,
     tmdbId: number
   ): Promise<CachedMapping | 'temporarily_unavailable'> {
@@ -150,14 +152,17 @@ export class TraktWatchStatusService {
     }
 
     try {
-      const traktId = await new TraktConnectionService().withAuthenticatedApi(
-        userId,
-        (api) =>
-          api.findByTmdbId(
-            mediaType,
-            tmdbId,
-            AbortSignal.timeout(LOOKUP_TIMEOUT_MS)
-          )
+      const settings = getSettings().trakt;
+      if (!isTraktConfigured(settings)) {
+        throw new Error('Trakt application is not configured');
+      }
+      const traktId = await new TraktAPI(
+        settings.clientId.trim(),
+        settings.clientSecret
+      ).findByTmdbId(
+        mediaType,
+        tmdbId,
+        AbortSignal.timeout(this.lookupTimeoutMs)
       );
       const mapping: CachedMapping =
         traktId === null ? { kind: 'miss' } : { kind: 'hit', traktId };
@@ -194,14 +199,19 @@ export class TraktWatchStatusService {
           api.getWatchHistory(
             mediaType,
             traktId,
-            AbortSignal.timeout(LOOKUP_TIMEOUT_MS)
+            AbortSignal.timeout(this.lookupTimeoutMs)
           )
       );
       const result: CachedWatchResult = {
         watched: history !== null,
         watchedAt: history?.watchedAt ?? null,
       };
-      cache.set(key, result, WATCH_STATUS_TTL_SECONDS);
+      await this.cacheForCurrentConnectionVersion(
+        connection,
+        mediaType,
+        tmdbId,
+        result
+      );
       return this.toItem(connection, { ...result, status: 'ok' });
     } catch {
       return this.toItem(connection, {
@@ -209,6 +219,47 @@ export class TraktWatchStatusService {
         watchedAt: null,
         status: 'temporarily_unavailable',
       });
+    }
+  }
+
+  private async cacheForCurrentConnectionVersion(
+    connection: TraktConnection,
+    mediaType: MediaType,
+    tmdbId: number,
+    result: CachedWatchResult
+  ): Promise<void> {
+    const repository = getRepository(TraktConnection);
+    const loadCurrent = () =>
+      repository.findOne({
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          tokenVersion: true,
+        },
+        where: {
+          id: connection.id,
+          userId: connection.userId,
+          status: TraktConnectionStatus.ACTIVE,
+        },
+      });
+    const current = await loadCurrent();
+    if (!current) {
+      return;
+    }
+
+    const cache = cacheManager.getCache('trakt-watch-status').data;
+    const key = `connection:${current.id}:version:${current.tokenVersion}:${mediaType}:${tmdbId}`;
+    cache.set(key, result, WATCH_STATUS_TTL_SECONDS);
+
+    const confirmed = await loadCurrent();
+    if (
+      !confirmed ||
+      confirmed.id !== current.id ||
+      confirmed.status !== current.status ||
+      confirmed.tokenVersion !== current.tokenVersion
+    ) {
+      cache.del(key);
     }
   }
 
