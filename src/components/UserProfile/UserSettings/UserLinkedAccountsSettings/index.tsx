@@ -4,7 +4,9 @@ import PlexLogo from '@app/assets/services/plex.svg';
 import Alert from '@app/components/Common/Alert';
 import ConfirmButton from '@app/components/Common/ConfirmButton';
 import Dropdown from '@app/components/Common/Dropdown';
+import LoadingSpinner from '@app/components/Common/LoadingSpinner';
 import PageTitle from '@app/components/Common/PageTitle';
+import { TraktConnectionActions } from '@app/components/Settings/SettingsTrakt/TraktConnectionList';
 import LinkJellyfinQuickConnectModal from '@app/components/UserProfile/UserSettings/UserLinkedAccountsSettings/LinkJellyfinQuickConnectModal';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, UserType, useUser } from '@app/hooks/useUser';
@@ -13,6 +15,7 @@ import defineMessages from '@app/utils/defineMessages';
 import PlexOAuth from '@app/utils/plex';
 import { TrashIcon } from '@heroicons/react/24/solid';
 import { MediaServerType } from '@server/constants/server';
+import type { TraktUserSettingsResponse } from '@server/interfaces/api/traktInterfaces';
 import axios from 'axios';
 import { useRouter } from 'next/router';
 import { useMemo, useState } from 'react';
@@ -34,6 +37,11 @@ const messages = defineMessages(
     plexErrorExists: 'This account is already linked to a Plex user',
     errorUnknown: 'An unknown error occurred',
     deleteFailed: 'Unable to delete linked account.',
+    trakt: 'Trakt',
+    traktDescription: 'Connect this Seerr user to their Trakt account.',
+    traktConfigure:
+      'Ask an administrator to configure Trakt before connecting an account.',
+    traktLoadFailed: 'The Trakt connection could not be loaded.',
   }
 );
 
@@ -62,6 +70,17 @@ const UserLinkedAccountsSettings = () => {
   } = useUser({ id: Number(router.query.userId) });
   const { data: passwordInfo } = useSWR<{ hasPassword: boolean }>(
     user ? `/api/v1/user/${user?.id}/settings/password` : null
+  );
+  const currentUserIsAdmin =
+    ((currentUser?.permissions ?? 0) & Permission.ADMIN) === Permission.ADMIN;
+  const canManageTrakt =
+    !!user && (currentUser?.id === user.id || currentUserIsAdmin);
+  const {
+    data: traktSettings,
+    error: traktError,
+    mutate: revalidateTrakt,
+  } = useSWR<TraktUserSettingsResponse>(
+    canManageTrakt && user ? `/api/v1/user/${user.id}/settings/trakt` : null
   );
   const [showJellyfinModal, setShowJellyfinModal] = useState(false);
   const [showJellyfinQuickConnectModal, setShowJellyfinQuickConnectModal] =
@@ -157,6 +176,48 @@ const UserLinkedAccountsSettings = () => {
     await revalidateUser();
   };
 
+  const traktSection = canManageTrakt ? (
+    <div className="section mt-8" data-testid="profile-trakt-section">
+      <div className="mb-4">
+        <h3 className="heading">{intl.formatMessage(messages.trakt)}</h3>
+        <p className="description">
+          {intl.formatMessage(messages.traktDescription)}
+        </p>
+      </div>
+      {!traktSettings && !traktError ? (
+        <LoadingSpinner />
+      ) : traktError || !traktSettings ? (
+        <Alert
+          title={intl.formatMessage(messages.traktLoadFailed)}
+          type="error"
+        />
+      ) : !traktSettings.applicationConfigured && !currentUserIsAdmin ? (
+        <>
+          <Alert
+            title={intl.formatMessage(messages.traktConfigure)}
+            type="warning"
+          />
+          {traktSettings.connection && (
+            <TraktConnectionActions
+              targetUserId={user.id}
+              connection={traktSettings.connection}
+              applicationConfigured={false}
+              showOAuthActions={false}
+              onRefresh={revalidateTrakt}
+            />
+          )}
+        </>
+      ) : (
+        <TraktConnectionActions
+          targetUserId={user.id}
+          connection={traktSettings.connection}
+          applicationConfigured={traktSettings.applicationConfigured}
+          onRefresh={revalidateTrakt}
+        />
+      )}
+    </div>
+  ) : null;
+
   if (
     currentUser?.id !== user?.id &&
     hasPermission(Permission.ADMIN) &&
@@ -173,6 +234,7 @@ const UserLinkedAccountsSettings = () => {
           title={intl.formatMessage(messages.noPermissionDescription)}
           type="error"
         />
+        {traktSection}
       </>
     );
   }
@@ -262,6 +324,8 @@ const UserLinkedAccountsSettings = () => {
           </h3>
         </div>
       )}
+
+      {traktSection}
 
       <LinkJellyfinModal
         show={showJellyfinModal}
