@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, open, rm } from 'node:fs/promises';
+import { mkdtemp, open, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
@@ -17,6 +17,11 @@ const loadBackupDatabase = async () => {
     }
     throw error;
   }
+};
+
+const loadPromoteVerifiedPartial = async () => {
+  const module = await import(helperUrl);
+  return module.promoteVerifiedPartial;
 };
 
 const openDatabase = (databasePath, mode) =>
@@ -141,4 +146,58 @@ test('rejects an existing destination without modifying it', async () => {
     backupDatabase(sourcePath, destinationPath),
     /destination already exists/
   );
+});
+
+test('atomically rejects a destination that exists at promotion time', async () => {
+  const promoteVerifiedPartial = await loadPromoteVerifiedPartial();
+  assert.equal(
+    typeof promoteVerifiedPartial,
+    'function',
+    'promoteVerifiedPartial must exist'
+  );
+  const partialPath = path.join(fixtureRoot, '.promotion.partial');
+  const destinationPath = path.join(fixtureRoot, 'promotion.sqlite3');
+  const partialContents = 'verified partial database';
+  const existingEvidence = 'existing destination evidence';
+  const partial = await open(partialPath, 'wx');
+  await partial.writeFile(partialContents);
+  await partial.close();
+  const destination = await open(destinationPath, 'wx');
+  await destination.writeFile(existingEvidence);
+  await destination.close();
+
+  await assert.rejects(
+    promoteVerifiedPartial(partialPath, destinationPath),
+    /destination already exists/
+  );
+  assert.equal(await readFile(destinationPath, 'utf8'), existingEvidence);
+  assert.equal(await readFile(partialPath, 'utf8'), partialContents);
+});
+
+test('retains and reports a partial after a corrupt source backup fails', async () => {
+  const backupDatabase = await loadBackupDatabase();
+  assert.equal(typeof backupDatabase, 'function', 'backupDatabase must exist');
+  const corruptSourcePath = path.join(fixtureRoot, 'corrupt.sqlite3');
+  const destinationPath = path.join(fixtureRoot, 'corrupt-backup.sqlite3');
+  const corruptSource = await open(corruptSourcePath, 'wx');
+  await corruptSource.writeFile('not a SQLite database');
+  await corruptSource.close();
+
+  let reportedPartialPath;
+  await assert.rejects(
+    backupDatabase(corruptSourcePath, destinationPath),
+    (error) => {
+      const match = error.message.match(/partial database retained at (.+)$/);
+      assert.ok(match, 'failure must report the retained partial path');
+      reportedPartialPath = match[1];
+      return true;
+    }
+  );
+
+  await assert.rejects(stat(destinationPath), { code: 'ENOENT' });
+  assert.equal(path.dirname(reportedPartialPath), fixtureRoot);
+  assert.ok(
+    (await readdir(fixtureRoot)).includes(path.basename(reportedPartialPath))
+  );
+  assert.ok((await stat(reportedPartialPath)).isFile());
 });

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, open, rename, stat } from 'node:fs/promises';
+import { access, link, open, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import sqlite3 from 'sqlite3';
@@ -65,6 +65,26 @@ const assertDestinationAbsent = async (destinationPath) => {
   throw new Error(`destination already exists: ${destinationPath}`);
 };
 
+export const promoteVerifiedPartial = async (partialPath, destinationPath) => {
+  try {
+    await link(partialPath, destinationPath);
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new Error(`destination already exists: ${destinationPath}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+
+  try {
+    await unlink(partialPath);
+    return { partialRetained: false };
+  } catch {
+    return { partialRetained: true };
+  }
+};
+
 export const backupDatabase = async (sourcePath, destinationPath) => {
   if (!path.isAbsolute(sourcePath) || !path.isAbsolute(destinationPath)) {
     throw new Error('source and destination must be absolute paths');
@@ -100,14 +120,13 @@ export const backupDatabase = async (sourcePath, destinationPath) => {
       throw new Error(`integrity check failed: ${integrityRows.join(', ')}`);
     }
 
-    await assertDestinationAbsent(destinationPath);
-    await rename(partialPath, destinationPath);
-    const destinationStat = await stat(destinationPath);
+    const partialStat = await stat(partialPath);
+    await promoteVerifiedPartial(partialPath, destinationPath);
 
     return {
       sourcePath,
       destinationPath,
-      bytes: destinationStat.size,
+      bytes: partialStat.size,
       integrity: 'ok',
     };
   } catch (error) {

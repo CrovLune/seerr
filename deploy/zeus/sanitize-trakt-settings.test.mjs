@@ -4,11 +4,12 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const helperPath = path.join(
-  path.dirname(new URL(import.meta.url).pathname),
+  path.dirname(fileURLToPath(import.meta.url)),
   'sanitize-trakt-settings.mjs'
 );
 const helperUrl = new URL('./sanitize-trakt-settings.mjs', import.meta.url);
@@ -97,6 +98,27 @@ test('reports when top-level Trakt settings are already absent', async () => {
   assert.equal(result, 'already_absent');
   assert.deepEqual(JSON.parse(await readFile(settingsPath, 'utf8')), settings);
   assert.equal((await stat(settingsPath)).mode & 0o777, 0o600);
+});
+
+test('rejects malformed settings with a content-free CLI error and no rewrite', async () => {
+  const settingsPath = path.join(fixtureRoot, 'malformed-settings.json');
+  const secretLikeValue = 'trakt-secret-like-value-that-must-not-leak';
+  const malformed = `{"trakt":{"clientSecret":"${secretLikeValue}"`;
+  await writeFile(settingsPath, malformed, { mode: 0o640 });
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [helperPath, settingsPath]),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stdout, '');
+      assert.equal(error.stderr, 'settings JSON is invalid\n');
+      assert.equal(error.stdout.includes(secretLikeValue), false);
+      assert.equal(error.stderr.includes(secretLikeValue), false);
+      return true;
+    }
+  );
+  assert.equal(await readFile(settingsPath, 'utf8'), malformed);
+  assert.equal((await stat(settingsPath)).mode & 0o777, 0o640);
 });
 
 test('rejects a relative settings path', async () => {

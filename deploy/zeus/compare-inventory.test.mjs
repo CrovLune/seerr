@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
+const execFileAsync = promisify(execFile);
 const helperUrl = new URL('./compare-inventory.mjs', import.meta.url);
+const helperPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'compare-inventory.mjs'
+);
 const requiredMigrations = [
   'SeerrMigration1759769291608',
   'AddTraktConnections1785456000000',
@@ -208,6 +216,7 @@ test('rejects a changed request count', async () => {
 
 test('rejects every changed request boundary field', async () => {
   for (const [field, value] of [
+    ['id', 31],
     ['requestedById', 99],
     ['mediaId', 999],
     ['status', 1],
@@ -219,6 +228,47 @@ test('rejects every changed request boundary field', async () => {
       }),
       new RegExp(`request newest mismatch.*${field}`)
     );
+  }
+});
+
+test('reports malformed source and migrated JSON without echoing file content', async () => {
+  const secretLikeValue = 'inventory-secret-like-value-that-must-not-leak';
+  for (const malformedSide of ['source', 'migrated']) {
+    const malformed = `{"secret":"${secretLikeValue}"`;
+    const source =
+      malformedSide === 'source' ? malformed : JSON.stringify(sourceInventory);
+    const migrated =
+      malformedSide === 'migrated'
+        ? malformed
+        : JSON.stringify(migratedInventory);
+    fixtureNumber += 1;
+    const sourcePath = path.join(
+      fixtureRoot,
+      `malformed-source-${fixtureNumber}.json`
+    );
+    const migratedPath = path.join(
+      fixtureRoot,
+      `malformed-migrated-${fixtureNumber}.json`
+    );
+    await writeFile(sourcePath, source);
+    await writeFile(migratedPath, migrated);
+
+    await assert.rejects(
+      execFileAsync(process.execPath, [helperPath, sourcePath, migratedPath]),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, '');
+        assert.equal(
+          error.stderr,
+          `${malformedSide} inventory JSON is invalid\n`
+        );
+        assert.equal(error.stdout.includes(secretLikeValue), false);
+        assert.equal(error.stderr.includes(secretLikeValue), false);
+        return true;
+      }
+    );
+    assert.equal(await readFile(sourcePath, 'utf8'), source);
+    assert.equal(await readFile(migratedPath, 'utf8'), migrated);
   }
 });
 

@@ -8,7 +8,13 @@ export const sanitizeTraktSettings = async (settingsPath) => {
     throw new Error('settings file must use an absolute path');
   }
 
-  const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
+  const serializedSettings = await readFile(settingsPath, 'utf8');
+  let settings;
+  try {
+    settings = JSON.parse(serializedSettings);
+  } catch {
+    throw new Error('settings JSON is invalid');
+  }
   const result = Object.hasOwn(settings, 'trakt')
     ? 'removed'
     : 'already_absent';

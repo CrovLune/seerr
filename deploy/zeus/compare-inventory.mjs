@@ -45,6 +45,15 @@ const requiredMigrations = [
   'AddTraktConnections1785456000000',
 ];
 
+const parseInventoryFile = async (inventoryPath, label) => {
+  const serializedInventory = await readFile(inventoryPath, 'utf8');
+  try {
+    return JSON.parse(serializedInventory);
+  } catch {
+    throw new Error(`${label} inventory JSON is invalid`);
+  }
+};
+
 const compareValue = (sourceValue, migratedValue) =>
   Object.is(sourceValue, migratedValue);
 
@@ -158,8 +167,8 @@ export const compareInventoryFiles = async (sourcePath, migratedPath) => {
     throw new Error('source and migrated inventories must use absolute paths');
   }
   const [source, migrated] = await Promise.all([
-    readFile(sourcePath, 'utf8').then(JSON.parse),
-    readFile(migratedPath, 'utf8').then(JSON.parse),
+    parseInventoryFile(sourcePath, 'source'),
+    parseInventoryFile(migratedPath, 'migrated'),
   ]);
   return compareInventories(source, migrated);
 };

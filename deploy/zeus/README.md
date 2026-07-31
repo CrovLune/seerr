@@ -186,76 +186,482 @@ docker compose --env-file .env \
 
 ## Final cutover
 
-Perform cutover only after the rehearsal inventory and application checks are
-accepted. Keep one persistent Zeus shell and a validated, explicit
-`CUTOVER_BACKUP_ROOT`; never infer it from a glob or “latest.”
+Run this only after the rehearsal is accepted. Use one persistent Zeus shell.
+Do not infer state from a glob, directory order, or a mutable tag.
 
-1. Record the old container, exact image ID/reference/digest, raw and resolved
-   Compose, Watchtower state, source bundle, and optional environment file in a
-   new mode-`0700` UTC backup root. Pin the rollback Compose to a retained local
-   old-image tag with `pull_policy: never`, disable Watchtower, checksum the
-   bundle, and write the exact root to the mode-`0600` active-cutover file.
-2. Stop Overseerr. Copy its complete config, including SQLite WAL/SHM files,
-   with `cp -a`; archive and checksum it; test a separate extraction with
-   `diff -qr`. Save, checksum, and gzip-test the exact old image. Keep the old
-   bind directory untouched.
-3. Create `/home/crovlune/containers/seerr` once with `config/db` and `logs`
-   owned by `1000:1000`. Copy the committed tools and mode-`0600` digest-pinned
-   `.env`. Sanitize only a copied `settings.json`, create an online SQLite
-   backup into the new config, inventory it, and prove the old config still
-   equals the raw backup.
-4. Bring the stopped Overseerr Compose project down with
-   `down --remove-orphans`, without volumes. Confirm the old bind data, image,
-   Compose source, and cutover backup still exist.
-5. Render and inspect the final Seerr Compose file. Pull and start only the
-   immutable digest. Wait for health, inspect migration logs, and confirm the
-   running `.Config.Image` equals `SEERR_IMAGE_REF`.
-6. Verify local health plus both production domains. The callback path without
-   state must reach Seerr and return a validation response such as `400`; it
-   must never redirect to the local hostname. Verify the public router from a
-   non-LAN source.
-7. Before configuring Trakt or creating a request, generate the final inventory
-   and compare it with the cutover source inventory. Only then run login, Plex,
-   existing-data, permission, request, and Trakt acceptance.
-8. Retain the old image, config archive, checksums, rollback Compose, and source
-   bundle until the owner explicitly authorizes retirement.
+### 1. Create and record the immutable backup context
 
-Production routing is intentionally exact:
+Prove the live service still uses the expected Compose and bind paths, then
+create one new UTC backup root:
 
-- callback: public host plus exact callback path, priority `300`, `https`, no
-  middleware;
-- LAN public-host redirect: approved IPv4/IPv6 ranges, priority `200`,
-  `redirect-to-local@file`;
-- LAN local host: approved ranges, priority `200`, `ip-whitelist@file`;
-- general public host: priority `100`, no middleware;
-- service port `5055` on external network `traefik`; and
-- Watchtower disabled.
+```bash
+test "$(docker inspect overseerr --format '{{.State.Running}}')" = true
+test "$(docker inspect overseerr --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}')" = \
+  /home/crovlune/containers/overseerr/docker-compose.yml
+test "$(docker inspect overseerr --format '{{range .Mounts}}{{if eq .Destination "/app/config"}}{{.Source}}{{end}}{{end}}')" = \
+  /home/crovlune/containers/overseerr/config
 
-There must be no interval in which Overseerr and Seerr both claim these
-production host rules.
+CUTOVER_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+CUTOVER_BACKUP_ROOT="/home/crovlune/backups/seerr-cutover/$CUTOVER_ID"
+ACTIVE_CUTOVER_FILE=/home/crovlune/backups/seerr-cutover/active-cutover.txt
+OLD_COMPOSE_FILE=/home/crovlune/containers/overseerr/docker-compose.yml
+OLD_CONFIG_DIR=/home/crovlune/containers/overseerr/config
+SEERR_ROOT=/home/crovlune/containers/seerr
+umask 077
 
-## Rollback
+printf '%s\n' "$CUTOVER_BACKUP_ROOT" |
+  grep -E '^/home/crovlune/backups/seerr-cutover/[0-9]{8}T[0-9]{6}Z$'
+test ! -e "$ACTIVE_CUTOVER_FILE"
+test ! -e "$CUTOVER_BACKUP_ROOT"
+AVAILABLE_KB="$(df -Pk /home/crovlune/backups | awk 'NR == 2 { print $4 }')"
+test "$AVAILABLE_KB" -gt 10485760
 
-Before Seerr accepts a write, rollback uses only the validated backup root and
-the pinned retained image:
+OLD_IMAGE_ID="$(docker inspect overseerr --format '{{.Image}}')"
+OLD_IMAGE_REF="$(docker inspect overseerr --format '{{.Config.Image}}')"
+OLD_IMAGE_DIGEST="$(
+  docker image inspect "$OLD_IMAGE_ID" --format '{{index .RepoDigests 0}}'
+)"
+OLD_WATCHTOWER="$(
+  docker inspect overseerr --format \
+    '{{index .Config.Labels "com.centurylinklabs.watchtower.enable"}}'
+)"
+ROLLBACK_IMAGE_REF="ghcr.io/crovlune/overseerr:rollback-$CUTOVER_ID"
+printf '%s\n' "$OLD_IMAGE_ID" | grep -E '^sha256:[0-9a-f]{64}$'
+test -n "$OLD_IMAGE_REF"
+test -n "$OLD_IMAGE_DIGEST"
+test -n "$OLD_WATCHTOWER"
+
+docker image tag "$OLD_IMAGE_ID" "$ROLLBACK_IMAGE_REF"
+install -d -m 0700 "$CUTOVER_BACKUP_ROOT"
+test "$(stat -c '%a' "$CUTOVER_BACKUP_ROOT")" = 700
+docker inspect overseerr \
+  > "$CUTOVER_BACKUP_ROOT/overseerr-container-inspect.json"
+docker image inspect "$OLD_IMAGE_ID" \
+  > "$CUTOVER_BACKUP_ROOT/overseerr-image-inspect.json"
+docker compose ls -a > "$CUTOVER_BACKUP_ROOT/compose-ls.txt"
+install -m 0600 \
+  /home/crovlune/backups/source-archives/overseerr-trakt-2026-07-31.bundle \
+  /home/crovlune/backups/source-archives/overseerr-trakt-2026-07-31.bundle.sha256 \
+  "$CUTOVER_BACKUP_ROOT/"
+(cd "$CUTOVER_BACKUP_ROOT" && \
+  sha256sum -c overseerr-trakt-2026-07-31.bundle.sha256)
+install -m 0600 \
+  "$OLD_COMPOSE_FILE" "$CUTOVER_BACKUP_ROOT/docker-compose.yml"
+if test -f /home/crovlune/containers/overseerr/.env; then
+  install -m 0600 \
+    /home/crovlune/containers/overseerr/.env \
+    "$CUTOVER_BACKUP_ROOT/overseerr.env"
+fi
+
+cd /home/crovlune/containers/overseerr
+docker compose -f docker-compose.yml config \
+  > "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml"
+sed -i \
+  "s#^    image: .*#    image: $ROLLBACK_IMAGE_REF#" \
+  "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml"
+sed -i \
+  '/^    image:/a\    pull_policy: never' \
+  "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml"
+sed -i \
+  's/com.centurylinklabs.watchtower.enable: "true"/com.centurylinklabs.watchtower.enable: "false"/' \
+  "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml"
+docker compose -f "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml" config \
+  > /dev/null
+grep -F "image: $ROLLBACK_IMAGE_REF" \
+  "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml"
+grep -F 'pull_policy: never' \
+  "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml"
+grep -F 'com.centurylinklabs.watchtower.enable: "false"' \
+  "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml"
+
+printf 'old_image_id=%s\nold_image_ref=%s\nold_image_digest=%s\nold_watchtower=%s\nrollback_image_ref=%s\nold_config_dir=%s\nold_compose_file=%s\n' \
+  "$OLD_IMAGE_ID" "$OLD_IMAGE_REF" "$OLD_IMAGE_DIGEST" "$OLD_WATCHTOWER" \
+  "$ROLLBACK_IMAGE_REF" "$OLD_CONFIG_DIR" "$OLD_COMPOSE_FILE" \
+  > "$CUTOVER_BACKUP_ROOT/rollback.txt"
+chmod 0600 "$CUTOVER_BACKUP_ROOT/rollback.txt"
+printf '%s\n' "$CUTOVER_BACKUP_ROOT" > "$ACTIVE_CUTOVER_FILE"
+chmod 0600 "$ACTIVE_CUTOVER_FILE"
+test "$(stat -c '%a' "$CUTOVER_BACKUP_ROOT/rollback.txt")" = 600
+test "$(stat -c '%a' "$ACTIVE_CUTOVER_FILE")" = 600
+test "$(cat "$ACTIVE_CUTOVER_FILE")" = "$CUTOVER_BACKUP_ROOT"
+```
+
+After any reconnect, restore only this explicitly recorded context:
+
+```bash
+CUTOVER_BACKUP_ROOT="$(
+  cat /home/crovlune/backups/seerr-cutover/active-cutover.txt
+)"
+printf '%s\n' "$CUTOVER_BACKUP_ROOT" |
+  grep -E '^/home/crovlune/backups/seerr-cutover/[0-9]{8}T[0-9]{6}Z$'
+test -d "$CUTOVER_BACKUP_ROOT"
+test -f "$CUTOVER_BACKUP_ROOT/rollback.txt"
+OLD_CONFIG_DIR="$(
+  awk -F= '$1 == "old_config_dir" { print $2 }' \
+    "$CUTOVER_BACKUP_ROOT/rollback.txt"
+)"
+OLD_IMAGE_ID="$(
+  awk -F= '$1 == "old_image_id" { print $2 }' \
+    "$CUTOVER_BACKUP_ROOT/rollback.txt"
+)"
+OLD_COMPOSE_FILE="$(
+  awk -F= '$1 == "old_compose_file" { print $2 }' \
+    "$CUTOVER_BACKUP_ROOT/rollback.txt"
+)"
+ROLLBACK_IMAGE_REF="$(
+  awk -F= '$1 == "rollback_image_ref" { print $2 }' \
+    "$CUTOVER_BACKUP_ROOT/rollback.txt"
+)"
+test "$OLD_CONFIG_DIR" = /home/crovlune/containers/overseerr/config
+test "$OLD_COMPOSE_FILE" = \
+  /home/crovlune/containers/overseerr/docker-compose.yml
+printf '%s\n' "$OLD_IMAGE_ID" | grep -E '^sha256:[0-9a-f]{64}$'
+test -n "$ROLLBACK_IMAGE_REF"
+SEERR_ROOT=/home/crovlune/containers/seerr
+```
+
+### 2. Stop Overseerr and prove the raw config and image backups
+
+Stopping precedes `cp -a`, so the raw archive includes a coherent complete
+config and any SQLite WAL/SHM files that exist.
+
+```bash
+cd /home/crovlune/containers/overseerr
+docker compose -f docker-compose.yml stop overseerr
+test "$(docker inspect overseerr --format '{{.State.Status}}')" = exited
+
+test ! -e "$CUTOVER_BACKUP_ROOT/overseerr-config-raw"
+cp -a "$OLD_CONFIG_DIR" "$CUTOVER_BACKUP_ROOT/overseerr-config-raw"
+tar -C "$CUTOVER_BACKUP_ROOT" \
+  -czf "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz" \
+  overseerr-config-raw
+sha256sum "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz" \
+  > "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz.sha256"
+sha256sum -c \
+  "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz.sha256"
+test "$(docker image inspect "$ROLLBACK_IMAGE_REF" --format '{{.Id}}')" = \
+  "$OLD_IMAGE_ID"
+docker image save "$ROLLBACK_IMAGE_REF" |
+  gzip > "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz"
+sha256sum "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz" \
+  > "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz.sha256"
+sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz.sha256"
+gzip -t "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz"
+tar -tzf "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz" \
+  > "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.manifest.txt"
+
+test ! -e "$CUTOVER_BACKUP_ROOT/config-restore-test"
+install -d -m 0700 "$CUTOVER_BACKUP_ROOT/config-restore-test"
+tar -xzf "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz" \
+  -C "$CUTOVER_BACKUP_ROOT/config-restore-test"
+diff -qr \
+  "$CUTOVER_BACKUP_ROOT/overseerr-config-raw" \
+  "$CUTOVER_BACKUP_ROOT/config-restore-test/overseerr-config-raw"
+
+test ! -e "$CUTOVER_BACKUP_ROOT/source-restore-test"
+git clone --no-checkout \
+  --branch archive/overseerr-trakt-2026-07-31 \
+  "$CUTOVER_BACKUP_ROOT/overseerr-trakt-2026-07-31.bundle" \
+  "$CUTOVER_BACKUP_ROOT/source-restore-test"
+git -C "$CUTOVER_BACKUP_ROOT/source-restore-test" show-ref --verify \
+  refs/remotes/origin/archive/overseerr-trakt-2026-07-31
+```
+
+Do not restart Overseerr unless the rollback section is being executed.
+
+### 3. Create and verify the final clean migration copy
+
+The final root is new. Sanitization and migration operate only on copies under
+the final or cutover backup roots.
+
+```bash
+SEERR_ROOT=/home/crovlune/containers/seerr
+test ! -e "$SEERR_ROOT"
+install -d -m 0700 "$SEERR_ROOT"
+install -d -m 0700 -o 1000 -g 1000 \
+  "$SEERR_ROOT/config/db" "$SEERR_ROOT/logs"
+test "$(stat -c '%u:%g' "$SEERR_ROOT/config/db")" = 1000:1000
+test "$(stat -c '%u:%g' "$SEERR_ROOT/logs")" = 1000:1000
+install -m 0644 \
+  /home/crovlune/containers/seerr-rehearsal/compose.yaml \
+  "$SEERR_ROOT/compose.yaml"
+install -m 0644 \
+  /home/crovlune/containers/seerr-rehearsal/inventory-db.mjs \
+  /home/crovlune/containers/seerr-rehearsal/compare-inventory.mjs \
+  /home/crovlune/containers/seerr-rehearsal/sqlite-backup.mjs \
+  /home/crovlune/containers/seerr-rehearsal/sanitize-trakt-settings.mjs \
+  "$SEERR_ROOT/"
+install -m 0600 \
+  /home/crovlune/containers/seerr-rehearsal/.env \
+  "$SEERR_ROOT/.env"
+test "$(stat -c '%a' "$SEERR_ROOT/.env")" = 600
+
+SEERR_IMAGE_REF="$(awk -F= '$1 == "SEERR_IMAGE" { print $2 }' "$SEERR_ROOT/.env")"
+printf '%s\n' "$SEERR_IMAGE_REF" |
+  grep -E '^ghcr\.io/crovlune/seerr@sha256:[0-9a-f]{64}$'
+
+rsync -a \
+  --exclude '/db/' \
+  --exclude '/logs/' \
+  --exclude '/cache/' \
+  "$CUTOVER_BACKUP_ROOT/overseerr-config-raw/" "$SEERR_ROOT/config/"
+test ! -e "$CUTOVER_BACKUP_ROOT/overseerr-config-working"
+cp -a \
+  "$CUTOVER_BACKUP_ROOT/overseerr-config-raw" \
+  "$CUTOVER_BACKUP_ROOT/overseerr-config-working"
+
+docker run --rm \
+  --user 1000:1000 \
+  --entrypoint node \
+  -v "$SEERR_ROOT:/work" \
+  "$OLD_IMAGE_ID" \
+  /work/sanitize-trakt-settings.mjs /work/config/settings.json
+docker run --rm \
+  --user 1000:1000 \
+  --entrypoint node \
+  -v "$SEERR_ROOT:/work:ro" \
+  "$OLD_IMAGE_ID" \
+  -e 'const fs=require("node:fs");const s=JSON.parse(fs.readFileSync("/work/config/settings.json","utf8"));if(Object.hasOwn(s,"trakt")||Object.hasOwn(s.main??{},"mediaServerType"))process.exit(1);console.log("legacy migration precondition: ready")'
+
+docker run --rm \
+  --user 1000:1000 \
+  --entrypoint node \
+  -v "$CUTOVER_BACKUP_ROOT/overseerr-config-working:/source" \
+  -v "$SEERR_ROOT/config/db:/destination" \
+  -v "$SEERR_ROOT/sqlite-backup.mjs:/app/sqlite-backup.mjs:ro" \
+  "$OLD_IMAGE_ID" \
+  /app/sqlite-backup.mjs \
+  /source/db/db.sqlite3 \
+  /destination/db.sqlite3
+
+docker run --rm \
+  --user 1000:1000 \
+  --entrypoint node \
+  -v "$SEERR_ROOT/config/db:/data:ro" \
+  -v "$SEERR_ROOT/inventory-db.mjs:/app/inventory-db.mjs:ro" \
+  "$OLD_IMAGE_ID" \
+  /app/inventory-db.mjs /data/db.sqlite3 \
+  > "$CUTOVER_BACKUP_ROOT/cutover-source-inventory.json"
+jq -e '.integrity == "ok"' \
+  "$CUTOVER_BACKUP_ROOT/cutover-source-inventory.json"
+diff -qr \
+  "$OLD_CONFIG_DIR" \
+  "$CUTOVER_BACKUP_ROOT/overseerr-config-raw"
+```
+
+Only after every backup/copy check succeeds, remove the stopped old Compose
+project without deleting volumes:
+
+```bash
+cd /home/crovlune/containers/overseerr
+docker compose -f docker-compose.yml down --remove-orphans
+test -z "$(docker ps -aq --filter name='^overseerr$')"
+test -d "$OLD_CONFIG_DIR"
+test -f "$OLD_COMPOSE_FILE"
+test -d "$CUTOVER_BACKUP_ROOT/overseerr-config-raw"
+docker image inspect "$OLD_IMAGE_ID" > /dev/null
+```
+
+### 4. Validate, start, and identify the immutable Seerr deployment
 
 ```bash
 cd /home/crovlune/containers/seerr
-docker compose --env-file .env -f compose.yaml down --remove-orphans
-gzip -dc "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz" | docker image load
+SEERR_IMAGE_REF="$(awk -F= '$1 == "SEERR_IMAGE" { print $2 }' .env)"
+printf '%s\n' "$SEERR_IMAGE_REF" |
+  grep -E '^ghcr\.io/crovlune/seerr@sha256:[0-9a-f]{64}$'
+docker compose --env-file .env -f compose.yaml config --format json \
+  > rendered-compose.json
+jq -e --arg image "$SEERR_IMAGE_REF" '
+  .services.seerr.image == $image and
+  .services.seerr.init == true and
+  .services.seerr.user == "1000:1000" and
+  any(.services.seerr.volumes[]; .target == "/app/config") and
+  any(.services.seerr.volumes[]; .target == "/app/config/logs") and
+  .services.seerr.labels["traefik.http.routers.seerr-trakt-callback.priority"] == "300" and
+  .services.seerr.labels["traefik.http.routers.seerr-trakt-callback.entrypoints"] == "https" and
+  (.services.seerr.labels | has("traefik.http.routers.seerr-trakt-callback.middlewares") | not) and
+  .services.seerr.labels["traefik.http.routers.seerr-lan-redirect.priority"] == "200" and
+  .services.seerr.labels["traefik.http.routers.seerr-lan-redirect.middlewares"] == "redirect-to-local@file" and
+  .services.seerr.labels["traefik.http.routers.seerr-local.priority"] == "200" and
+  .services.seerr.labels["traefik.http.routers.seerr-local.middlewares"] == "ip-whitelist@file" and
+  .services.seerr.labels["traefik.http.routers.seerr-public.priority"] == "100" and
+  (.services.seerr.labels | has("traefik.http.routers.seerr-public.middlewares") | not) and
+  .services.seerr.labels["traefik.http.services.seerr.loadbalancer.server.port"] == "5055" and
+  .services.seerr.labels["com.centurylinklabs.watchtower.enable"] == "false"
+' rendered-compose.json
+docker compose --env-file .env -f compose.yaml pull
+docker compose --env-file .env -f compose.yaml up -d
+for attempt in $(seq 1 10); do
+  if test "$(docker inspect seerr --format '{{.State.Health.Status}}')" = healthy; then
+    break
+  fi
+  sleep 5
+done
+test "$(docker inspect seerr --format '{{.State.Health.Status}}')" = healthy
+docker compose --env-file .env -f compose.yaml ps
+docker compose --env-file .env -f compose.yaml logs --no-color --tail=300 seerr
+test "$(docker inspect seerr --format '{{.Config.Image}}')" = "$SEERR_IMAGE_REF"
+```
+
+The callback router has no middleware and outranks the LAN redirect, which in
+turn outranks the general public router. There is no interval where both apps
+claim the production hosts.
+
+### 5. Verify routing before accepting writes
+
+Run the container check on Zeus and the domain checks from the Mac/LAN:
+
+```bash
+docker exec seerr \
+  wget -q -O - http://127.0.0.1:5055/api/v1/status/appdata
+curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  https://overseerr.pixeltrophies.com/api/v1/status/appdata
+curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  https://overseerr.local.pixeltrophies.com/api/v1/status/appdata
+curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback'
+```
+
+The callback without state must return a Seerr validation response such as
+`400`, never a redirect to the private hostname. From a non-LAN source, the
+public host must return Seerr `200`; that lower-priority route cannot be proven
+from a LAN source address.
+
+### 6. Compare final migrated data before configuration or requests
+
+```bash
+cd /home/crovlune/containers/seerr
+docker run --rm \
+  --user 1000:1000 \
+  --entrypoint node \
+  -v "$PWD/config/db:/data:ro" \
+  -v "$PWD/inventory-db.mjs:/app/inventory-db.mjs:ro" \
+  "$SEERR_IMAGE_REF" \
+  /app/inventory-db.mjs /data/db.sqlite3 \
+  > "$CUTOVER_BACKUP_ROOT/final-inventory.json"
+docker run --rm \
+  --entrypoint node \
+  -v "$PWD:/work:ro" \
+  -v "$CUTOVER_BACKUP_ROOT:/evidence:ro" \
+  "$SEERR_IMAGE_REF" \
+  /work/compare-inventory.mjs \
+  /evidence/cutover-source-inventory.json \
+  /evidence/final-inventory.json
+```
+
+### 7. Acceptance and final retained-evidence checks
+
+Before the first Seerr write, verify in the production browser:
+
+1. administrator login, Plex, existing media/requests/issues/notifications, and
+   administrator/user permissions;
+2. exact Trakt callback registration
+   `https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback`;
+3. one admin household authorization and one family self-service authorization,
+   each with `prompt=login`;
+4. duplicate Trakt identity returns `409` without reassignment;
+5. reconnect creates no duplicate, household/self watch visibility is correct,
+   and unlink/reconnect leaves one row; and
+6. only after all read-only checks, create and update one disposable request.
+
+After that first write, record that snapshot rollback will lose new changes:
+
+```bash
+printf 'automatic_database_rollback=false\nfirst_seerr_write_recorded_at=%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
+chmod 0600 "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
+
+docker ps -a --filter name=overseerr
+docker ps --filter name=seerr
 sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz.sha256"
+sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz.sha256"
+docker inspect seerr --format \
+  '{{index .Config.Labels "com.centurylinklabs.watchtower.enable"}} {{.Config.Image}}'
+```
+
+Retain the old image, config archive, checksums, rollback Compose, and source
+bundle until the owner explicitly authorizes retirement.
+
+## Rollback
+
+Before any Seerr write, require the write marker to be absent. Restore and
+validate the explicit context, verify both archive checksums before use, then
+load the exact old image:
+
+```bash
+CUTOVER_BACKUP_ROOT="$(
+  cat /home/crovlune/backups/seerr-cutover/active-cutover.txt
+)"
+printf '%s\n' "$CUTOVER_BACKUP_ROOT" |
+  grep -E '^/home/crovlune/backups/seerr-cutover/[0-9]{8}T[0-9]{6}Z$'
+test -d "$CUTOVER_BACKUP_ROOT"
+test -f "$CUTOVER_BACKUP_ROOT/rollback.txt"
+test ! -e "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
+OLD_IMAGE_ID="$(
+  awk -F= '$1 == "old_image_id" { print $2 }' \
+    "$CUTOVER_BACKUP_ROOT/rollback.txt"
+)"
+ROLLBACK_IMAGE_REF="$(
+  awk -F= '$1 == "rollback_image_ref" { print $2 }' \
+    "$CUTOVER_BACKUP_ROOT/rollback.txt"
+)"
+printf '%s\n' "$OLD_IMAGE_ID" | grep -E '^sha256:[0-9a-f]{64}$'
+test -n "$ROLLBACK_IMAGE_REF"
+
+cd /home/crovlune/containers/seerr
+docker compose --env-file .env -f compose.yaml down --remove-orphans
+sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz.sha256"
+gzip -t "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz"
+gzip -dc "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz" | docker image load
+test "$(docker image inspect "$ROLLBACK_IMAGE_REF" --format '{{.Id}}')" = \
+  "$OLD_IMAGE_ID"
+sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz.sha256"
+test -d /home/crovlune/containers/overseerr/config
 docker compose \
   -f "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml" \
   up -d --pull never
+for attempt in $(seq 1 12); do
+  if test "$(docker inspect overseerr --format '{{.State.Running}}')" = true; then
+    break
+  fi
+  sleep 4
+done
 test "$(docker inspect overseerr --format '{{.State.Running}}')" = true
+test "$(docker inspect overseerr --format '{{.Image}}')" = "$OLD_IMAGE_ID"
+test "$(docker inspect overseerr --format '{{.Config.Image}}')" = \
+  "$ROLLBACK_IMAGE_REF"
+test "$(docker inspect overseerr --format '{{index .Config.Labels "com.centurylinklabs.watchtower.enable"}}')" = false
 docker exec overseerr \
   wget -q -O - http://127.0.0.1:5055/api/v1/status/appdata
 ```
 
-Verify the loaded image ID, disabled Watchtower label, both domains, and a fresh
-inventory against the cutover source evidence. Never overwrite an unexpected
-config directory; restore an archive to a new explicit path and modify only a
-copy of the rollback Compose file.
+Generate a fresh safe inventory from the unchanged old database, compare it
+with the cutover source evidence, and verify both domains:
+
+```bash
+SEERR_ROOT=/home/crovlune/containers/seerr
+docker run --rm \
+  --user 1000:1000 \
+  --entrypoint node \
+  -v /home/crovlune/containers/overseerr/config/db:/data:ro \
+  -v "$SEERR_ROOT/inventory-db.mjs:/app/inventory-db.mjs:ro" \
+  "$OLD_IMAGE_ID" \
+  /app/inventory-db.mjs /data/db.sqlite3 \
+  > "$CUTOVER_BACKUP_ROOT/rollback-inventory.json"
+diff -u \
+  "$CUTOVER_BACKUP_ROOT/cutover-source-inventory.json" \
+  "$CUTOVER_BACKUP_ROOT/rollback-inventory.json"
+curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  https://overseerr.pixeltrophies.com/api/v1/status/appdata
+curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  https://overseerr.local.pixeltrophies.com/api/v1/status/appdata
+```
+
+If `/home/crovlune/containers/overseerr/config` is unexpectedly absent, stop.
+Restore the verified archive into a new explicit directory under the validated
+backup root and update only a copied rollback Compose file; never overwrite or
+populate an unexpected path.
 
 `docker compose down -v` is forbidden in rehearsal, cutover, and rollback. Do
 not delete either application config or any rollback evidence. After Seerr
