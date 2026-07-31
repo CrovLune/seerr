@@ -1089,6 +1089,7 @@
   "components.Settings.SettingsNetwork.validationDnsCacheMinTtl": "You must provide a valid minimum TTL",
   "components.Settings.SettingsNetwork.validationProxyPort": "You must provide a valid port",
   "components.Settings.SettingsTrakt.TraktApplicationForm.callbackCopied": "Callback URL copied.",
+  "components.Settings.SettingsTrakt.TraktApplicationForm.callbackUnavailable": "Set the Application URL in General settings to generate the callback URL",
   "components.Settings.SettingsTrakt.TraktApplicationForm.callbackUrl": "Callback URL",
   "components.Settings.SettingsTrakt.TraktApplicationForm.clientId": "Client ID",
   "components.Settings.SettingsTrakt.TraktApplicationForm.clientSecret": "Client secret",

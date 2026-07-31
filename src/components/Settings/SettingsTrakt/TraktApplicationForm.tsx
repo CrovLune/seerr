@@ -31,6 +31,8 @@ const messages = defineMessages(
     callbackUrl: 'Callback URL',
     callbackCopied: 'Callback URL copied.',
     copyCallback: 'Copy Trakt callback URL',
+    callbackUnavailable:
+      'Set the Application URL in General settings to generate the callback URL',
     secretVisibility: 'Show or hide client secret',
     save: 'Save changes',
     saving: 'Saving…',
@@ -233,15 +235,22 @@ const TraktApplicationForm = ({
                   <input
                     id="trakt-callback-url"
                     type="text"
-                    value={settings.callbackUrl}
+                    value={settings.callbackUrl ?? ''}
                     readOnly
                   />
-                  <CopyButton
-                    textToCopy={settings.callbackUrl}
-                    toastMessage={intl.formatMessage(messages.callbackCopied)}
-                    ariaLabel={intl.formatMessage(messages.copyCallback)}
-                  />
+                  {settings.callbackUrl && (
+                    <CopyButton
+                      textToCopy={settings.callbackUrl}
+                      toastMessage={intl.formatMessage(messages.callbackCopied)}
+                      ariaLabel={intl.formatMessage(messages.copyCallback)}
+                    />
+                  )}
                 </div>
+                {!settings.callbackUrl && (
+                  <span className="label-tip">
+                    {intl.formatMessage(messages.callbackUnavailable)}
+                  </span>
+                )}
               </div>
             </div>
             <div className="actions">

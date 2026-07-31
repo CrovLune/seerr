@@ -41,7 +41,7 @@ const getDevelopmentOrigin = (): string | null => {
  * The origin Trakt returns to. A development origin takes precedence so that a local
  * round-trip does not depend on rewriting the saved application URL.
  */
-export const getCanonicalTraktOrigin = (): string | null =>
+const getCanonicalTraktOrigin = (): string | null =>
   getDevelopmentOrigin() ?? toOrigin(getSettings().main.applicationUrl);
 
 export const getAllowedTraktOrigins = (): TraktAllowedOrigin[] => {
