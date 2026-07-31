@@ -7,6 +7,7 @@ describe('Trakt linked account', () => {
     let userId = 0;
     let connected = false;
     let transaction = 0;
+    const openedPopups: { location: { href: string } }[] = [];
 
     cy.intercept('GET', '/api/v1/user/*/settings/trakt', (request) => {
       const match = request.url.match(/\/user\/(\d+)\/settings\/trakt$/);
@@ -54,14 +55,15 @@ describe('Trakt linked account', () => {
     cy.get('[data-testid=trakt-user-selector]').should('not.exist');
 
     cy.window().then((win) => {
-      cy.stub(win, 'open').callsFake(
-        () =>
-          ({
-            closed: false,
-            close: cy.stub(),
-            location: { href: 'about:blank' },
-          }) as unknown as Window
-      );
+      cy.stub(win, 'open').callsFake(() => {
+        const popup = {
+          closed: false,
+          close: cy.stub(),
+          location: { href: 'about:blank' },
+        };
+        openedPopups.push(popup);
+        return popup as unknown as Window;
+      });
     });
 
     cy.get('[data-testid=profile-trakt-section]')
@@ -69,6 +71,7 @@ describe('Trakt linked account', () => {
       .click();
     cy.wait('@startSelfOAuth').then(({ response }) => {
       expect(response?.body.authorizationUrl).to.contain('prompt=login');
+      expect(openedPopups[0].location.href).to.contain('prompt=login');
     });
     cy.wait('@selfOAuthStatus');
     cy.get('[data-testid=profile-trakt-section]').within(() => {
@@ -81,6 +84,7 @@ describe('Trakt linked account', () => {
       .click();
     cy.wait('@startSelfOAuth').then(({ response }) => {
       expect(response?.body.authorizationUrl).to.contain('prompt=login');
+      expect(openedPopups[1].location.href).to.contain('prompt=login');
     });
     cy.wait('@selfOAuthStatus');
     cy.get('[data-testid=profile-trakt-section]')
@@ -161,5 +165,47 @@ describe('Trakt cross-user administration', () => {
       cy.contains('Trakt').should('be.visible');
       cy.contains('button', 'Connect').should('be.visible');
     });
+  });
+
+  it('lets an exact delegated ADMIN manage owner Trakt without exposing other owner settings', () => {
+    cy.loginAsAdmin();
+    cy.intercept('GET', '/api/v1/auth/me', {
+      id: 2,
+      displayName: 'Delegated Admin',
+      email: 'delegated-admin@example.com',
+      permissions: 2,
+      userType: 3,
+      warnings: [],
+    }).as('delegatedAdmin');
+    cy.intercept('GET', '/api/v1/user/1', {
+      id: 1,
+      displayName: 'Owner',
+      email: 'owner@example.com',
+      permissions: 2,
+      userType: 3,
+      warnings: [],
+      createdAt: '2026-07-31T10:00:00.000Z',
+    });
+    cy.intercept('GET', '/api/v1/user/1/settings/trakt', {
+      applicationConfigured: true,
+      connection: null,
+    }).as('ownerTrakt');
+
+    cy.visit('/users/1/settings/linked-accounts');
+    cy.wait('@delegatedAdmin');
+    cy.wait('@ownerTrakt');
+    cy.get('[data-testid=profile-trakt-section]').within(() => {
+      cy.contains('Trakt').should('be.visible');
+      cy.contains('button', 'Connect').should('be.visible');
+    });
+    cy.contains('General').should('not.exist');
+    cy.contains('Permissions').should('not.exist');
+
+    cy.visit('/users/1/settings/main');
+    cy.wait('@delegatedAdmin');
+    cy.contains(
+      "You do not have permission to modify this user's settings"
+    ).should('be.visible');
+    cy.get('[data-testid=user-settings-general-form]').should('not.exist');
   });
 });

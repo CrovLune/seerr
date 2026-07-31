@@ -76,7 +76,17 @@ describe('Trakt administration', () => {
   });
 
   it('keeps the secret write-only and confirms only client ID changes', () => {
+    let reconnectRequired = false;
+    cy.intercept('GET', '/api/v1/settings/trakt/connections', (request) => {
+      request.reply([
+        {
+          ...connection,
+          status: reconnectRequired ? 'reconnect_required' : 'active',
+        },
+      ]);
+    }).as('settingsConnections');
     cy.visit('/settings/trakt');
+    cy.wait('@settingsConnections');
 
     cy.get('#trakt-client-id')
       .should('have.length', 1)
@@ -119,6 +129,7 @@ describe('Trakt administration', () => {
         clientId: 'new-client-id',
         confirmReconnectAll: true,
       });
+      reconnectRequired = true;
       request.reply({
         clientId: 'new-client-id',
         clientSecretConfigured: true,
@@ -133,6 +144,21 @@ describe('Trakt administration', () => {
     );
     cy.get('[data-testid=modal-ok-button]').click();
     cy.wait('@changeClientId');
+    cy.wait('@settingsConnections');
+    cy.contains('[data-testid=trakt-user-row]', 'friend@example.com').within(
+      () => {
+        cy.contains('Reconnect required').should('be.visible');
+        cy.contains('button', 'Reconnect').should('be.visible');
+      }
+    );
+  });
+
+  it('names the secret visibility and callback copy controls', () => {
+    cy.visit('/settings/trakt');
+    cy.get('button[aria-label="Show or hide client secret"]').should(
+      'be.visible'
+    );
+    cy.get('button[aria-label="Copy Trakt callback URL"]').should('be.visible');
   });
 
   it('pages through every user and refreshes one canonical row after OAuth', () => {
@@ -186,12 +212,12 @@ describe('Trakt administration', () => {
       );
     });
 
+    const popup = {
+      closed: false,
+      close: cy.stub(),
+      location: { href: 'about:blank' },
+    };
     cy.window().then((win) => {
-      const popup = {
-        closed: false,
-        close: cy.stub(),
-        location: { href: 'about:blank' },
-      };
       cy.stub(win, 'open')
         .returns(popup as unknown as Window)
         .as('openPopup');
@@ -207,6 +233,7 @@ describe('Trakt administration', () => {
     );
     cy.wait('@startOAuth').then(({ response }) => {
       expect(response?.body.authorizationUrl).to.contain('prompt=login');
+      expect(popup.location.href).to.contain('prompt=login');
     });
     cy.wait('@oauthStatus')
       .its('response.body.status')
@@ -276,6 +303,127 @@ describe('Trakt administration', () => {
     cy.then(() => {
       expect(statusRequest).to.equal(2);
       expect(connectionsRequest).to.equal(2);
+    });
+  });
+
+  it('completes OAuth when popup close is observed before the queued callback message', () => {
+    let statusRequests = 0;
+    let connectedAfterCallback = false;
+    const popup = {
+      closed: false,
+      close: cy.stub(),
+      location: { href: 'about:blank' },
+    };
+    cy.intercept('GET', '/api/v1/settings/trakt/connections', (request) => {
+      request.reply(
+        connectedAfterCallback
+          ? [
+              connection,
+              {
+                ...connection,
+                userId: 3,
+                traktUserId: 'trakt-3',
+                traktUsername: 'callback-close-user',
+              },
+            ]
+          : [connection]
+      );
+    }).as('callbackConnections');
+    cy.intercept('POST', '/api/v1/user/3/settings/trakt/auth', {
+      transactionId: 'callback-close',
+      authorizationUrl:
+        'https://trakt.tv/oauth/authorize?prompt=login&state=callback-close',
+      callbackOrigin: 'https://overseerr.pixeltrophies.com',
+      expiresAt: '2026-07-31T11:00:00.000Z',
+    }).as('startCallbackOAuth');
+    cy.intercept(
+      'GET',
+      '/api/v1/trakt/oauth/callback-close/status',
+      (request) => {
+        statusRequests += 1;
+        connectedAfterCallback = statusRequests > 1;
+        request.reply(
+          connectedAfterCallback
+            ? { status: 'succeeded', resultCode: null }
+            : { status: 'pending', resultCode: null }
+        );
+      }
+    ).as('callbackStatus');
+
+    cy.visit('/settings/trakt');
+    cy.window().then((win) => {
+      cy.stub(win, 'open').returns(popup as unknown as Window);
+    });
+    cy.contains('[data-testid=trakt-user-row]', 'housemate@example.com')
+      .contains('button', 'Connect')
+      .click();
+    cy.wait('@startCallbackOAuth');
+    cy.wait('@callbackStatus')
+      .its('response.body.status')
+      .should('equal', 'pending');
+    cy.window().then((win) => {
+      win.setTimeout(() => {
+        win.dispatchEvent(
+          new MessageEvent('message', {
+            origin: 'https://overseerr.pixeltrophies.com',
+            data: {
+              type: 'trakt-oauth-result',
+              transactionId: 'callback-close',
+            },
+          })
+        );
+      }, 700);
+      popup.closed = true;
+    });
+
+    cy.wait('@callbackStatus')
+      .its('response.body.status')
+      .should('equal', 'succeeded');
+    cy.contains('[data-testid=trakt-user-row]', 'housemate@example.com').within(
+      () => {
+        cy.contains('callback-close-user').should('be.visible');
+        cy.contains('Connected').should('be.visible');
+      }
+    );
+    cy.contains('Trakt login was closed').should('not.exist');
+    cy.then(() => expect(statusRequests).to.equal(2));
+  });
+
+  it('closes every reserved popup when authorization cannot start', () => {
+    const failureStatuses = [400, 403, 500];
+    const popups = failureStatuses.map(() => ({
+      closed: false,
+      close: cy.stub(),
+      location: { href: 'about:blank' },
+    }));
+    let authorizationAttempt = 0;
+    let popupAttempt = 0;
+    cy.intercept('POST', '/api/v1/user/3/settings/trakt/auth', (request) => {
+      request.reply({
+        statusCode: failureStatuses[authorizationAttempt],
+        body: { message: 'Unable to start Trakt authorization.' },
+      });
+      authorizationAttempt += 1;
+    }).as('failedAuthorization');
+
+    cy.visit('/settings/trakt');
+    cy.window().then((win) => {
+      cy.stub(win, 'open').callsFake(() => {
+        const popup = popups[popupAttempt];
+        popupAttempt += 1;
+        return popup as unknown as Window;
+      });
+    });
+    failureStatuses.forEach((statusCode, index) => {
+      cy.contains('[data-testid=trakt-user-row]', 'housemate@example.com')
+        .contains('button', 'Connect')
+        .click();
+      cy.wait('@failedAuthorization')
+        .its('response.statusCode')
+        .should('equal', statusCode);
+      cy.contains('Trakt could not be connected').should('be.visible');
+      cy.then(() => expect(popups[index].close).to.have.been.calledOnce);
+      cy.get('[data-testid=modal-cancel-button]').click();
     });
   });
 
@@ -395,7 +543,8 @@ describe('Trakt administration', () => {
       },
     });
     cy.intercept('DELETE', '/api/v1/user/2/settings/trakt', {
-      remoteRevocationSucceeded: false,
+      delay: 750,
+      body: { remoteRevocationSucceeded: false },
     }).as('unlinkTrakt');
 
     cy.visit('/settings/trakt');
@@ -429,6 +578,9 @@ describe('Trakt administration', () => {
       .contains('Unlink')
       .click()
       .click();
+    cy.contains('[data-testid=trakt-user-row]', 'friend@example.com')
+      .contains('button', 'Confirm unlink')
+      .should('be.disabled');
     cy.wait('@unlinkTrakt');
     cy.contains(
       'The local connection was removed, but Trakt could not revoke its token'

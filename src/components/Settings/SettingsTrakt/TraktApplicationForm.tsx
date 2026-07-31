@@ -30,6 +30,8 @@ const messages = defineMessages(
     secretHint: 'Leave blank to keep the saved client secret.',
     callbackUrl: 'Callback URL',
     callbackCopied: 'Callback URL copied.',
+    copyCallback: 'Copy Trakt callback URL',
+    secretVisibility: 'Show or hide client secret',
     save: 'Save changes',
     saving: 'Saving…',
     saved: 'Trakt settings saved.',
@@ -54,7 +56,7 @@ interface PendingConfirmation {
 
 interface TraktApplicationFormProps {
   settings: TraktPublicSettings;
-  onSaved: (settings: TraktPublicSettings) => void;
+  onSaved: (settings: TraktPublicSettings) => void | Promise<unknown>;
 }
 
 const TraktApplicationForm = ({
@@ -85,7 +87,7 @@ const TraktApplicationForm = ({
         '/api/v1/settings/trakt',
         body
       );
-      onSaved(data);
+      await onSaved(data);
       helpers.resetForm({
         values: {
           clientId: data.clientId,
@@ -200,6 +202,9 @@ const TraktApplicationForm = ({
                     id="trakt-client-secret"
                     name="clientSecret"
                     type="password"
+                    visibilityToggleLabel={intl.formatMessage(
+                      messages.secretVisibility
+                    )}
                   />
                 </div>
                 <div className="mt-2">
@@ -234,6 +239,7 @@ const TraktApplicationForm = ({
                   <CopyButton
                     textToCopy={settings.callbackUrl}
                     toastMessage={intl.formatMessage(messages.callbackCopied)}
+                    ariaLabel={intl.formatMessage(messages.copyCallback)}
                   />
                 </div>
               </div>

@@ -129,13 +129,14 @@ const TraktOAuthModal = ({
       })
       .catch((error) => {
         if (!axios.isCancel(error) && mountedRef.current) {
+          closePopup();
           setResultCode(error?.response?.data?.code ?? null);
           setState('failed');
         }
       });
 
     return () => controller.abort();
-  }, [attempt, targetUserId]);
+  }, [attempt, closePopup, targetUserId]);
 
   useEffect(() => {
     if (!authorization || state !== 'waiting') {
@@ -146,6 +147,7 @@ const TraktOAuthModal = ({
     let terminal = false;
     let checkInFlight = false;
     let checkQueued = false;
+    let popupClosePending = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let popupTimer: ReturnType<typeof setInterval> | undefined = undefined;
     const controller = new AbortController();
@@ -165,6 +167,7 @@ const TraktOAuthModal = ({
         return;
       }
       checkInFlight = true;
+      const isFinalPopupCloseCheck = popupClosePending;
       try {
         const { data } = await axios.get<TraktOAuthStatusResponse>(
           `/api/v1/trakt/oauth/${authorization.transactionId}/status`,
@@ -175,6 +178,12 @@ const TraktOAuthModal = ({
           terminal = true;
           stop();
           finishWithStatus(data);
+          return;
+        }
+        if (isFinalPopupCloseCheck) {
+          terminal = true;
+          stop();
+          setState('popup_closed');
           return;
         }
       } catch (error) {
@@ -219,9 +228,17 @@ const TraktOAuthModal = ({
     void checkStatus();
     popupTimer = setInterval(() => {
       if (!stopped && popupRef.current?.closed) {
-        stop();
         popupRef.current = null;
-        setState('popup_closed');
+        popupClosePending = true;
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+          pollTimer = undefined;
+        }
+        if (popupTimer) {
+          clearInterval(popupTimer);
+          popupTimer = undefined;
+        }
+        void checkStatus();
       }
     }, 500);
 

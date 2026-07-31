@@ -161,6 +161,7 @@ export const TraktConnectionActions = ({
           <ConfirmButton
             onClick={() => void unlink()}
             confirmText={intl.formatMessage(messages.unlinkConfirm)}
+            disabled={unlinking}
           >
             <TrashIcon />
             <span>

@@ -5,7 +5,7 @@ import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import type { TraktPublicSettings } from '@server/interfaces/api/traktInterfaces';
 import { useIntl } from 'react-intl';
-import useSWR from 'swr';
+import useSWR, { mutate as globalMutate } from 'swr';
 import TraktApplicationForm from './TraktApplicationForm';
 import TraktConnectionList from './TraktConnectionList';
 
@@ -45,7 +45,12 @@ const SettingsTrakt = () => {
       />
       <TraktApplicationForm
         settings={settings}
-        onSaved={(nextSettings) => void mutate(nextSettings, false)}
+        onSaved={(nextSettings) =>
+          Promise.all([
+            mutate(nextSettings, false),
+            globalMutate('/api/v1/settings/trakt/connections'),
+          ])
+        }
       />
       <TraktConnectionList applicationConfigured={applicationConfigured} />
     </>
