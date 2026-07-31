@@ -200,6 +200,7 @@ const UserLinkedAccountsSettings = () => {
           {traktSettings.connection && (
             <TraktConnectionActions
               targetUserId={user.id}
+              targetUserDisplayName={user.displayName}
               connection={traktSettings.connection}
               applicationConfigured={false}
               showOAuthActions={false}
@@ -210,6 +211,7 @@ const UserLinkedAccountsSettings = () => {
       ) : (
         <TraktConnectionActions
           targetUserId={user.id}
+          targetUserDisplayName={user.displayName}
           connection={traktSettings.connection}
           applicationConfigured={traktSettings.applicationConfigured}
           onRefresh={revalidateTrakt}

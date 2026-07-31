@@ -161,6 +161,92 @@ describe('Trakt administration', () => {
     cy.get('button[aria-label="Copy Trakt callback URL"]').should('be.visible');
   });
 
+  it('reconnects an active account and identifies each OAuth target', () => {
+    const openedPopups: {
+      closed: boolean;
+      close: () => void;
+      location: { href: string };
+    }[] = [];
+    cy.intercept('POST', '/api/v1/user/2/settings/trakt/auth', {
+      transactionId: 'active-reconnect',
+      authorizationUrl:
+        'https://trakt.tv/oauth/authorize?prompt=login&state=active-reconnect',
+      callbackOrigin: 'https://overseerr.pixeltrophies.com',
+      expiresAt: '2026-07-31T11:00:00.000Z',
+    }).as('startActiveReconnect');
+    cy.intercept('GET', '/api/v1/trakt/oauth/active-reconnect/status', {
+      status: 'pending',
+      resultCode: null,
+    }).as('activeReconnectStatus');
+    cy.intercept('POST', '/api/v1/user/3/settings/trakt/auth', {
+      transactionId: 'housemate-connect',
+      authorizationUrl:
+        'https://trakt.tv/oauth/authorize?prompt=login&state=housemate-connect',
+      callbackOrigin: 'https://overseerr.pixeltrophies.com',
+      expiresAt: '2026-07-31T11:00:00.000Z',
+    }).as('startHousemateConnect');
+    cy.intercept('GET', '/api/v1/trakt/oauth/housemate-connect/status', {
+      status: 'pending',
+      resultCode: null,
+    }).as('housemateConnectStatus');
+
+    cy.visit('/settings/trakt');
+    cy.window().then((win) => {
+      cy.stub(win, 'open').callsFake(() => {
+        const popup = {
+          closed: false,
+          close: cy.stub(),
+          location: { href: 'about:blank' },
+        };
+        openedPopups.push(popup);
+        return popup as unknown as Window;
+      });
+    });
+
+    cy.contains('[data-testid=trakt-user-row]', 'friend@example.com').within(
+      () => {
+        cy.contains('button', 'Reconnect').should('be.visible').click();
+        cy.contains('button', 'Unlink').should('be.visible');
+      }
+    );
+    cy.get('[role=dialog]').within(() => {
+      cy.get('[data-testid=modal-title]').should(
+        'have.text',
+        'Connect Trakt for Friend'
+      );
+      cy.contains('friend@example.com').should('not.exist');
+    });
+    cy.wait('@startActiveReconnect').then(({ response }) => {
+      expect(response?.body.authorizationUrl).to.contain('prompt=login');
+      expect(openedPopups[0].location.href).to.contain('prompt=login');
+      expect(openedPopups[0].location.href).to.contain(
+        'state=active-reconnect'
+      );
+    });
+    cy.wait('@activeReconnectStatus');
+    cy.get('[data-testid=modal-cancel-button]').click();
+
+    cy.contains('[data-testid=trakt-user-row]', 'housemate@example.com')
+      .contains('button', 'Connect')
+      .click();
+    cy.get('[role=dialog]').within(() => {
+      cy.get('[data-testid=modal-title]').should(
+        'have.text',
+        'Connect Trakt for Housemate'
+      );
+      cy.contains('housemate@example.com').should('not.exist');
+    });
+    cy.wait('@startHousemateConnect');
+    cy.wait('@housemateConnectStatus');
+    cy.get('[data-testid=modal-cancel-button]').click();
+
+    cy.then(() => {
+      expect(openedPopups).to.have.length(2);
+      expect(openedPopups[0].close).to.have.property('callCount', 1);
+      expect(openedPopups[1].close).to.have.property('callCount', 1);
+    });
+  });
+
   it('pages through every user and refreshes one canonical row after OAuth', () => {
     let connectionsRequest = 0;
     cy.intercept('GET', '/api/v1/settings/trakt/connections', (request) => {

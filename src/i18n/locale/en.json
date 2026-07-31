@@ -1410,7 +1410,7 @@
   "components.Trakt.TraktOAuthModal.retry": "Retry",
   "components.Trakt.TraktOAuthModal.starting": "Preparing a secure Trakt login…",
   "components.Trakt.TraktOAuthModal.targetMissing": "The selected Seerr user no longer exists.",
-  "components.Trakt.TraktOAuthModal.title": "Connect Trakt",
+  "components.Trakt.TraktOAuthModal.targetTitle": "Connect Trakt for {targetUserDisplayName}",
   "components.Trakt.TraktOAuthModal.tokenExchangeFailed": "Trakt could not finish the login. Please retry.",
   "components.Trakt.TraktOAuthModal.unknownError": "Trakt could not be connected. Please try again.",
   "components.Trakt.TraktOAuthModal.waiting": "Complete the sign-in in the Trakt window.",

@@ -37,6 +37,7 @@ const messages = defineMessages(
 
 interface TraktConnectionActionsProps {
   targetUserId: number;
+  targetUserDisplayName: string;
   connection: TraktConnectionResponse | null;
   applicationConfigured: boolean;
   onRefresh: () => void | Promise<unknown>;
@@ -46,6 +47,7 @@ interface TraktConnectionActionsProps {
 
 export const TraktConnectionActions = ({
   targetUserId,
+  targetUserDisplayName,
   connection,
   applicationConfigured,
   onRefresh,
@@ -55,6 +57,7 @@ export const TraktConnectionActions = ({
   const intl = useIntl();
   const [oauthModal, setOAuthModal] = useState<{
     targetUserId: number;
+    targetUserDisplayName: string;
     initialPopup: Window | null;
   } | null>(null);
   const [unlinkError, setUnlinkError] = useState(false);
@@ -67,7 +70,7 @@ export const TraktConnectionActions = ({
       'trakt-oauth',
       'popup,width=640,height=760'
     );
-    setOAuthModal({ targetUserId, initialPopup: popup });
+    setOAuthModal({ targetUserId, targetUserDisplayName, initialPopup: popup });
   };
 
   const unlink = async () => {
@@ -100,6 +103,7 @@ export const TraktConnectionActions = ({
       {oauthModal && (
         <TraktOAuthModal
           targetUserId={oauthModal.targetUserId}
+          targetUserDisplayName={oauthModal.targetUserDisplayName}
           initialPopup={oauthModal.initialPopup}
           onConnected={() => {
             setOAuthModal(null);
@@ -147,9 +151,11 @@ export const TraktConnectionActions = ({
             <span>{intl.formatMessage(messages.connect)}</span>
           </Button>
         )}
-        {connection?.status === 'reconnect_required' && showOAuthActions && (
+        {connection && showOAuthActions && (
           <Button
-            buttonType="warning"
+            buttonType={
+              connection.status === 'reconnect_required' ? 'warning' : 'primary'
+            }
             onClick={startOAuth}
             disabled={!applicationConfigured}
           >
@@ -262,6 +268,7 @@ const TraktConnectionList = ({
             </div>
             <TraktConnectionActions
               targetUserId={user.id}
+              targetUserDisplayName={user.displayName}
               connection={connectionsByUser.get(user.id) ?? null}
               applicationConfigured={applicationConfigured}
               onRefresh={refreshConnections}

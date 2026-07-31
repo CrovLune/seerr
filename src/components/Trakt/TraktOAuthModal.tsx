@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIntl } from 'react-intl';
 
 const messages = defineMessages('components.Trakt.TraktOAuthModal', {
-  title: 'Connect Trakt',
+  targetTitle: 'Connect Trakt for {targetUserDisplayName}',
   starting: 'Preparing a secure Trakt login…',
   waiting: 'Complete the sign-in in the Trakt window.',
   openTrakt: 'Open Trakt',
@@ -41,6 +41,7 @@ const messages = defineMessages('components.Trakt.TraktOAuthModal', {
 
 export interface TraktOAuthModalProps {
   targetUserId: number;
+  targetUserDisplayName: string;
   initialPopup: Window | null;
   onConnected: () => void;
   onCancel: () => void;
@@ -52,6 +53,7 @@ const popupFeatures = 'popup,width=640,height=760';
 
 const TraktOAuthModal = ({
   targetUserId,
+  targetUserDisplayName,
   initialPopup,
   onConnected,
   onCancel,
@@ -316,7 +318,9 @@ const TraktOAuthModal = ({
       leaveTo="opacity-0"
     >
       <Modal
-        title={intl.formatMessage(messages.title)}
+        title={intl.formatMessage(messages.targetTitle, {
+          targetUserDisplayName,
+        })}
         onCancel={cancel}
         onOk={state === 'popup_closed' ? openTrakt : undefined}
         okText={intl.formatMessage(messages.openTrakt)}
