@@ -10,9 +10,11 @@ export interface TraktSettingsUpdate {
   confirmReconnectAll?: boolean;
 }
 
-export type TraktAllowedOrigin =
-  | 'https://overseerr.pixeltrophies.com'
-  | 'https://overseerr.local.pixeltrophies.com';
+/**
+ * The allowlist is configuration rather than a fixed set, so membership is decided at
+ * runtime by `isAllowedTraktOrigin` instead of by this type.
+ */
+export type TraktAllowedOrigin = string;
 
 export type TraktSafeResultCode =
   | 'access_denied'

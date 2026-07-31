@@ -2,16 +2,41 @@ import Settings from '@server/lib/settings';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  TRAKT_CALLBACK_URL,
   getAllowedTraktOrigins,
   getSafeTraktSettings,
+  getTraktCallbackUrl,
+  isAllowedTraktOrigin,
   isTraktConfigured,
 } from './config';
+
+const withEnv = (
+  env: { NODE_ENV?: string; TRAKT_DEV_ORIGIN?: string },
+  run: () => void
+) => {
+  const previous = {
+    NODE_ENV: process.env.NODE_ENV,
+    TRAKT_DEV_ORIGIN: process.env.TRAKT_DEV_ORIGIN,
+  };
+
+  Object.assign(process.env, env);
+  if (!('TRAKT_DEV_ORIGIN' in env)) {
+    delete process.env.TRAKT_DEV_ORIGIN;
+  }
+
+  try {
+    run();
+  } finally {
+    Object.assign(process.env, previous);
+    if (previous.TRAKT_DEV_ORIGIN === undefined) {
+      delete process.env.TRAKT_DEV_ORIGIN;
+    }
+  }
+};
 
 describe('Trakt configuration', () => {
   it('uses one canonical public callback', () => {
     assert.equal(
-      TRAKT_CALLBACK_URL,
+      getTraktCallbackUrl(),
       'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback'
     );
   });
@@ -21,6 +46,54 @@ describe('Trakt configuration', () => {
       'https://overseerr.pixeltrophies.com',
       'https://overseerr.local.pixeltrophies.com',
     ]);
+  });
+
+  it('admits a configured development origin and returns the OAuth round-trip to it', () => {
+    withEnv(
+      { NODE_ENV: 'development', TRAKT_DEV_ORIGIN: 'http://localhost:5055/' },
+      () => {
+        assert.deepEqual(getAllowedTraktOrigins(), [
+          'https://overseerr.pixeltrophies.com',
+          'https://overseerr.local.pixeltrophies.com',
+          'http://localhost:5055',
+        ]);
+        assert.equal(isAllowedTraktOrigin('http://localhost:5055'), true);
+        assert.equal(
+          getTraktCallbackUrl(),
+          'http://localhost:5055/api/v1/auth/trakt/callback'
+        );
+      }
+    );
+  });
+
+  it('keeps the production allowlist and callback when a development origin is set in production', () => {
+    withEnv(
+      { NODE_ENV: 'production', TRAKT_DEV_ORIGIN: 'http://localhost:5055' },
+      () => {
+        assert.deepEqual(getAllowedTraktOrigins(), [
+          'https://overseerr.pixeltrophies.com',
+          'https://overseerr.local.pixeltrophies.com',
+        ]);
+        assert.equal(isAllowedTraktOrigin('http://localhost:5055'), false);
+        assert.equal(
+          getTraktCallbackUrl(),
+          'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback'
+        );
+      }
+    );
+  });
+
+  it('ignores a blank development origin outside production', () => {
+    withEnv({ NODE_ENV: 'development', TRAKT_DEV_ORIGIN: '   ' }, () => {
+      assert.deepEqual(getAllowedTraktOrigins(), [
+        'https://overseerr.pixeltrophies.com',
+        'https://overseerr.local.pixeltrophies.com',
+      ]);
+      assert.equal(
+        getTraktCallbackUrl(),
+        'https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback'
+      );
+    });
   });
 
   it('redacts the secret and reports only whether it is configured', () => {

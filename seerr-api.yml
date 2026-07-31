@@ -149,9 +149,7 @@ components:
           format: uri
         callbackOrigin:
           type: string
-          enum:
-            - https://overseerr.pixeltrophies.com
-            - https://overseerr.local.pixeltrophies.com
+          format: uri
         expiresAt:
           type: string
           format: date-time
@@ -2529,11 +2527,13 @@ paths:
         - in: header
           name: Origin
           required: true
+          description: >-
+            Must be an allowed initiating origin. The allowlist is deployment
+            configuration and is enforced by the server, which rejects anything
+            else with 400.
           schema:
             type: string
-            enum:
-              - https://overseerr.pixeltrophies.com
-              - https://overseerr.local.pixeltrophies.com
+            format: uri
       responses:
         '200':
           description: Trakt OAuth transaction started
