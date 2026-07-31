@@ -126,3 +126,82 @@ test('old-container shutdown fails if Docker inspection fails', async () => {
     'docker ps must run as its own fail-fast assignment'
   );
 });
+
+test('rehearsal waits boundedly for health before HTTP and log checks', async () => {
+  const readme = await readRunbook();
+  const rehearsalBlock = extractBashBlocks(readme).find(
+    (block) =>
+      block.includes('seerr-rehearsal') &&
+      block.includes('compose.rehearsal.yaml') &&
+      block.includes('up -d')
+  );
+
+  assert.ok(rehearsalBlock, 'rehearsal startup Bash block must exist');
+  const upIndex = rehearsalBlock.indexOf('up -d');
+  const loopIndex = rehearsalBlock.indexOf('for attempt in $(seq 1 10); do');
+  const sleepIndex = rehearsalBlock.indexOf('sleep 5');
+  const finalHealthIndex = rehearsalBlock.lastIndexOf(
+    `test "$REHEARSAL_HEALTH" = healthy`
+  );
+  const httpIndex = rehearsalBlock.indexOf(
+    'curl --fail http://127.0.0.1:15055/api/v1/status/appdata'
+  );
+  const logsIndex = rehearsalBlock.indexOf('logs --no-color --tail=300 seerr');
+
+  for (const [label, index] of [
+    ['Compose startup', upIndex],
+    ['bounded health loop', loopIndex],
+    ['bounded wait interval', sleepIndex],
+    ['final health assertion', finalHealthIndex],
+    ['HTTP check', httpIndex],
+    ['migration logs check', logsIndex],
+  ]) {
+    assert.ok(index >= 0, `${label} must exist in rehearsal startup block`);
+  }
+  assert.ok(upIndex < loopIndex);
+  assert.ok(loopIndex < sleepIndex);
+  assert.ok(sleepIndex < finalHealthIndex);
+  assert.ok(finalHealthIndex < httpIndex);
+  assert.ok(httpIndex < logsIndex);
+});
+
+test('cutover write marker precedes every intentional production mutation', async () => {
+  const readme = await readRunbook();
+  const acceptanceStart = readme.indexOf(
+    '### 7. Acceptance and final retained-evidence checks'
+  );
+  const rollbackStart = readme.indexOf('## Rollback', acceptanceStart);
+  const acceptance = readme.slice(acceptanceStart, rollbackStart);
+
+  assert.ok(acceptanceStart >= 0, 'acceptance section must exist');
+  assert.ok(rollbackStart > acceptanceStart, 'rollback section must follow');
+
+  const markerIndex = acceptance.indexOf(
+    '> "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"'
+  );
+  const credentialSaveIndex = acceptance.indexOf(
+    '1. save the Trakt application credentials'
+  );
+  const authorizationIndex = acceptance.indexOf(
+    'one admin household authorization'
+  );
+  const requestWriteIndex = acceptance.indexOf(
+    'create and update one disposable request'
+  );
+
+  for (const [label, index] of [
+    ['write marker', markerIndex],
+    ['Trakt credential save', credentialSaveIndex],
+    ['Trakt authorization', authorizationIndex],
+    ['disposable request write', requestWriteIndex],
+  ]) {
+    assert.ok(index >= 0, `${label} must exist in acceptance section`);
+  }
+  assert.ok(markerIndex < credentialSaveIndex);
+  assert.ok(credentialSaveIndex < authorizationIndex);
+  assert.ok(authorizationIndex < requestWriteIndex);
+  assert.match(
+    acceptance,
+    /test ! -e "\$CUTOVER_BACKUP_ROOT\/post-cutover-write\.txt"[\s\S]*automatic_database_rollback=false/
+  );
+});

@@ -170,7 +170,26 @@ docker compose --env-file .env \
   -f compose.yaml -f compose.rehearsal.yaml pull
 docker compose --env-file .env \
   -f compose.yaml -f compose.rehearsal.yaml up -d
-test "$(docker inspect seerr-rehearsal --format '{{.State.Health.Status}}')" = healthy
+REHEARSAL_HEALTH=
+for attempt in $(seq 1 10); do
+  REHEARSAL_HEALTH="$(
+    docker inspect seerr-rehearsal --format '{{.State.Health.Status}}'
+  )"
+  if test "$REHEARSAL_HEALTH" = healthy; then
+    break
+  fi
+  sleep 5
+done
+REHEARSAL_HEALTH="$(
+  docker inspect seerr-rehearsal --format '{{.State.Health.Status}}'
+)"
+test "$REHEARSAL_HEALTH" = healthy
+docker compose --env-file .env \
+  -f compose.yaml -f compose.rehearsal.yaml ps
+curl --fail http://127.0.0.1:15055/api/v1/status/appdata
+docker compose --env-file .env \
+  -f compose.yaml -f compose.rehearsal.yaml \
+  logs --no-color --tail=300 seerr
 ```
 
 The override must render `container_name: seerr-rehearsal`, loopback-only port
@@ -589,28 +608,49 @@ docker run --rm \
 
 ### 7. Acceptance and final retained-evidence checks
 
-Before the first Seerr write, verify in the production browser:
+Before any Seerr write, complete only these read-only production-browser
+checks:
 
 1. administrator login, Plex, existing media/requests/issues/notifications, and
    administrator/user permissions;
 2. exact Trakt callback registration
-   `https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback`;
-3. one admin household authorization and one family self-service authorization,
-   each with `prompt=login`;
-4. duplicate Trakt identity returns `409` without reassignment;
-5. reconnect creates no duplicate, household/self watch visibility is correct,
-   and unlink/reconnect leaves one row; and
-6. only after all read-only checks, create and update one disposable request.
+   `https://overseerr.pixeltrophies.com/api/v1/auth/trakt/callback`.
 
-After that first write, record that snapshot rollback will lose new changes:
+Do not save the Trakt application credentials during those read-only checks.
+Immediately before that first intentional production mutation, create the
+write marker:
 
 ```bash
 set -Eeuo pipefail
-printf 'automatic_database_rollback=false\nfirst_seerr_write_recorded_at=%s\n' \
+test -d "$CUTOVER_BACKUP_ROOT"
+test ! -e "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
+umask 077
+printf 'automatic_database_rollback=false\nproduction_mutations_begin_at=%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
 chmod 0600 "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
+test -s "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
+```
 
+The marker disables automatic snapshot rollback before Seerr can accept a
+write. After it exists, any snapshot restore requires an explicit loss review
+and owner approval. With that guard present, perform the mutation checks in
+this order:
+
+1. save the Trakt application credentials once in Admin → Trakt;
+2. complete one admin household authorization and one family self-service
+   authorization,
+   each with `prompt=login`;
+3. confirm a duplicate Trakt identity returns `409` without reassignment;
+4. confirm reconnect creates no duplicate, household/self watch visibility is
+   correct,
+   and unlink/reconnect leaves one row; and
+5. create and update one disposable request.
+
+Finally, recheck the retained rollback evidence without changing it:
+
+```bash
+set -Eeuo pipefail
 docker ps -a --filter name=overseerr
 docker ps --filter name=seerr
 sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz.sha256"
