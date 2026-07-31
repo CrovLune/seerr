@@ -16,6 +16,7 @@ import cacheManager from '@server/lib/cache';
 import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
+import { TraktWatchStatusService } from '@server/lib/trakt/watchStatusService';
 import { setupTestDb } from '@server/test/db';
 import type { Express } from 'express';
 import express from 'express';
@@ -119,6 +120,105 @@ async function authenticatedAgent(email: string) {
 }
 
 describe('Trakt account routes', () => {
+  it('requires authentication for household watch status', async () => {
+    const response = await request(app).get('/trakt/watchstatus/movie/123');
+
+    assert.equal(response.status, 401);
+  });
+
+  it('returns validated household watch status for an authenticated viewer', async () => {
+    const friendUser = await getRepository(User).findOneByOrFail({
+      email: 'friend@seerr.dev',
+    });
+    const friend = await authenticatedAgent('friend@seerr.dev');
+    const getWatchStatus = mock.method(
+      TraktWatchStatusService.prototype,
+      'getWatchStatus',
+      async () => ({
+        mediaType: 'movie' as const,
+        tmdbId: 123,
+        items: [
+          {
+            userId: friendUser.id,
+            displayName: 'friend',
+            traktUsername: 'trakt-friend',
+            watched: true,
+            watchedAt: '2026-07-31T12:00:00.000Z',
+            status: 'ok' as const,
+          },
+        ],
+      })
+    );
+
+    const response = await friend.get('/trakt/watchstatus/movie/123');
+
+    assert.equal(response.status, 200);
+    assert.equal(getWatchStatus.mock.callCount(), 1);
+    const call = getWatchStatus.mock.calls[0];
+    assert.ok(call);
+    const input = call.arguments[0];
+    assert.ok(input);
+    assert.equal(input.viewer.id, friendUser.id);
+    assert.equal(input.mediaType, 'movie');
+    assert.equal(input.tmdbId, 123);
+    assert.deepEqual(response.body.items[0], {
+      userId: friendUser.id,
+      displayName: 'friend',
+      traktUsername: 'trakt-friend',
+      watched: true,
+      watchedAt: '2026-07-31T12:00:00.000Z',
+      status: 'ok',
+    });
+    assert.equal(JSON.stringify(response.body).includes('@seerr.dev'), false);
+    assert.equal(JSON.stringify(response.body).includes('token'), false);
+  });
+
+  it('rejects invalid watch-status media types and TMDB IDs before calling the service', async () => {
+    const friend = await authenticatedAgent('friend@seerr.dev');
+    const getWatchStatus = mock.method(
+      TraktWatchStatusService.prototype,
+      'getWatchStatus',
+      async () => ({ mediaType: 'movie' as const, tmdbId: 1, items: [] })
+    );
+
+    for (const pathValue of [
+      'Movie/1',
+      'show/1',
+      'movie/0',
+      'movie/-1',
+      'movie/1.5',
+      'tv/not-a-number',
+    ]) {
+      const response = await friend.get(`/trakt/watchstatus/${pathValue}`);
+      assert.equal(response.status, 400, pathValue);
+    }
+    assert.equal(getWatchStatus.mock.callCount(), 0);
+  });
+
+  it('keeps watch status compatible with the production OpenAPI validator', async () => {
+    const friendUser = await getRepository(User).findOneByOrFail({
+      email: 'friend@seerr.dev',
+    });
+    getSettings().main.apiKey = 'validator-test-api-key';
+    mock.method(
+      TraktWatchStatusService.prototype,
+      'getWatchStatus',
+      async () => ({ mediaType: 'tv' as const, tmdbId: 456, items: [] })
+    );
+
+    const response = await request(validatedApp)
+      .get('/api/v1/trakt/watchstatus/tv/456')
+      .set('X-API-Key', 'validator-test-api-key')
+      .set('X-API-User', String(friendUser.id));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, {
+      mediaType: 'tv',
+      tmdbId: 456,
+      items: [],
+    });
+  });
+
   it('loads the production OpenAPI validator and reaches a Trakt route', async () => {
     const friendUser = await getRepository(User).findOneByOrFail({
       email: 'friend@seerr.dev',

@@ -184,6 +184,53 @@ components:
             - token_exchange_failed
             - trakt_account_owned_by_another_user
             - trakt_application_not_configured
+    TraktWatchStatus:
+      type: object
+      required:
+        - mediaType
+        - tmdbId
+        - items
+      properties:
+        mediaType:
+          type: string
+          enum:
+            - movie
+            - tv
+        tmdbId:
+          type: integer
+          minimum: 1
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraktWatchStatusItem'
+    TraktWatchStatusItem:
+      type: object
+      required:
+        - userId
+        - displayName
+        - traktUsername
+        - watched
+        - watchedAt
+        - status
+      properties:
+        userId:
+          type: integer
+        displayName:
+          type: string
+        traktUsername:
+          type: string
+          nullable: true
+        watched:
+          type: boolean
+        watchedAt:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum:
+            - ok
+            - temporarily_unavailable
     TraktUnlinkResult:
       type: object
       required:
@@ -2525,6 +2572,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TraktConflict'
+  /trakt/watchstatus/{mediaType}/{tmdbId}:
+    get:
+      summary: Get household Trakt watch status for a TMDB title
+      tags:
+        - users
+      parameters:
+        - in: path
+          name: mediaType
+          required: true
+          schema:
+            type: string
+            enum:
+              - movie
+              - tv
+        - in: path
+          name: tmdbId
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Visible household watch status with partial failures
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraktWatchStatus'
+        '400':
+          description: Invalid media type or TMDB ID
+        '401':
+          description: Authentication required
   /auth/trakt/callback:
     get:
       summary: Complete a Trakt OAuth redirect
