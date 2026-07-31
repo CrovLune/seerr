@@ -1,5 +1,5 @@
 import TraktAPI from '@server/api/trakt';
-import { getRepository } from '@server/datasource';
+import dataSource, { getRepository } from '@server/datasource';
 import {
   TraktConnection,
   TraktConnectionStatus,
@@ -17,10 +17,12 @@ import { setupTestDb } from '@server/test/db';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
-import {
-  TraktConflictError,
-  TraktConnectionService,
-} from './connectionService';
+import type {
+  EntitySubscriberInterface,
+  InsertEvent,
+  TransactionRollbackEvent,
+} from 'typeorm';
+import { TraktConnectionService } from './connectionService';
 
 setupTestDb();
 
@@ -75,6 +77,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mock.timers.reset();
   mock.restoreAll();
 });
 
@@ -254,6 +257,41 @@ describe('TraktConnectionService', () => {
     assert.ok(row.consumedAt);
   });
 
+  it('expires callback and polling state exactly at the deadline', async () => {
+    const actor = await admin();
+    const service = new TraktConnectionService();
+    const callbackStart = await service.startAuthorization({
+      actorUserId: actor.id,
+      targetUserId: actor.id,
+      origin: allowedOrigin,
+    });
+    const pollStart = await service.startAuthorization({
+      actorUserId: actor.id,
+      targetUserId: actor.id,
+      origin: allowedOrigin,
+    });
+    const deadline = new Date('2031-01-01T00:00:00.000Z');
+    await transactions().update(
+      [callbackStart.transactionId, pollStart.transactionId],
+      { expiresAt: deadline }
+    );
+    mock.timers.enable({ apis: ['Date'], now: deadline.getTime() });
+
+    assert.equal(
+      (
+        await service.completeAuthorization({
+          state: rawStateFrom(callbackStart.authorizationUrl),
+          code: 'oauth-code',
+        })
+      ).resultCode,
+      'state_expired'
+    );
+    assert.deepEqual(
+      await service.getTransactionStatus(pollStart.transactionId, actor.id),
+      { status: 'failed', resultCode: 'state_expired' }
+    );
+  });
+
   it('reconnects the same target and stable Trakt identity', async () => {
     const actor = await admin();
     const existing = await connections().save(
@@ -404,6 +442,55 @@ describe('TraktConnectionService', () => {
     });
     assert.equal(row.status, TraktOAuthTransactionStatus.FAILED);
     assert.ok(row.consumedAt);
+  });
+
+  it('returns the durable terminal result when a network failure loses its CAS', async () => {
+    const actor = await admin();
+    const service = new TraktConnectionService();
+    const start = await service.startAuthorization({
+      actorUserId: actor.id,
+      targetUserId: actor.id,
+      origin: allowedOrigin,
+    });
+    let signalProfileRequested!: () => void;
+    const profileRequested = new Promise<void>((resolve) => {
+      signalProfileRequested = resolve;
+    });
+    let rejectProfile!: (error: Error) => void;
+    const profileResult = new Promise<never>((_resolve, reject) => {
+      rejectProfile = reject;
+    });
+    mock.method(TraktAPI.prototype, 'exchangeCode', async () => ({
+      accessToken: 'new-access-token',
+      refreshToken: 'new-refresh-token',
+      expiresAt: new Date('2030-01-01T00:00:00.000Z'),
+    }));
+    mock.method(TraktAPI.prototype, 'getProfile', async () => {
+      signalProfileRequested();
+      return profileResult;
+    });
+
+    const completionPromise = service.completeAuthorization({
+      state: rawStateFrom(start.authorizationUrl),
+      code: 'oauth-code',
+    });
+    await profileRequested;
+    await transactions().update(start.transactionId, {
+      expiresAt: new Date(Date.now() - 1),
+    });
+    assert.deepEqual(
+      await service.getTransactionStatus(start.transactionId, actor.id),
+      { status: 'failed', resultCode: 'oauth_interrupted' }
+    );
+    rejectProfile(new Error('simulated upstream failure'));
+
+    const completion = await completionPromise;
+    assert.equal(completion.resultCode, 'oauth_interrupted');
+    assert.equal(
+      (await transactions().findOneByOrFail({ id: start.transactionId }))
+        .resultCode,
+      'oauth_interrupted'
+    );
   });
 
   it('exposes processing as pending and interrupts it after two minutes', async () => {
@@ -654,10 +741,86 @@ describe('TraktConnectionService', () => {
     assert.equal(cache.has(`${existing.id + 1}:movie:1`), true);
   });
 
-  it('does not expose raw database constraint errors from unique races', () => {
-    assert.equal(
-      new TraktConflictError('target_has_different_trakt_account').message,
-      'target_has_different_trakt_account'
-    );
+  it('retries a real unique-constraint race and completes canonically', async () => {
+    const actor = await admin();
+    const service = new TraktConnectionService();
+    const start = await service.startAuthorization({
+      actorUserId: actor.id,
+      targetUserId: actor.id,
+      origin: allowedOrigin,
+    });
+    mockSuccessfulTrakt();
+    let injected = false;
+    let plantedAfterRollback = false;
+    let beforeInsertCalls = 0;
+    let racingUserId: number | undefined;
+    let racingTraktUserId: string | undefined;
+    const subscriber: EntitySubscriberInterface<TraktConnection> = {
+      listenTo: () => TraktConnection,
+      beforeInsert: async (event: InsertEvent<TraktConnection>) => {
+        beforeInsertCalls += 1;
+        if (injected || !event.entity) {
+          return;
+        }
+        injected = true;
+        racingUserId = event.entity.userId;
+        racingTraktUserId = event.entity.traktUserId;
+        await event.manager.insert(TraktConnection, {
+          userId: racingUserId,
+          traktUserId: racingTraktUserId,
+          status: TraktConnectionStatus.ACTIVE,
+          accessToken: 'racing-access-token',
+          refreshToken: 'racing-refresh-token',
+          expiresAt: new Date('2030-01-01T00:00:00.000Z'),
+          tokenVersion: 1,
+        });
+      },
+      afterTransactionRollback: async (event: TransactionRollbackEvent) => {
+        if (
+          plantedAfterRollback ||
+          racingUserId === undefined ||
+          racingTraktUserId === undefined
+        ) {
+          return;
+        }
+        plantedAfterRollback = true;
+        await event.manager.insert(TraktConnection, {
+          userId: racingUserId,
+          traktUserId: racingTraktUserId,
+          status: TraktConnectionStatus.ACTIVE,
+          accessToken: 'racing-access-token',
+          refreshToken: 'racing-refresh-token',
+          expiresAt: new Date('2030-01-01T00:00:00.000Z'),
+          tokenVersion: 1,
+        });
+      },
+    };
+    dataSource.subscribers.push(subscriber);
+
+    let result;
+    try {
+      result = await service.completeAuthorization({
+        state: rawStateFrom(start.authorizationUrl),
+        code: 'oauth-code',
+      });
+    } finally {
+      const subscriberIndex = dataSource.subscribers.indexOf(subscriber);
+      if (subscriberIndex !== -1) {
+        dataSource.subscribers.splice(subscriberIndex, 1);
+      }
+    }
+
+    assert.equal(injected, true);
+    assert.equal(plantedAfterRollback, true);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.resultCode, null);
+    assert.equal(beforeInsertCalls, 3);
+    assert.equal(await connections().count(), 1);
+    const connection = await connections()
+      .createQueryBuilder('connection')
+      .addSelect('connection.accessToken')
+      .getOneOrFail();
+    assert.equal(connection.accessToken, 'new-access-token');
+    assert.equal(connection.tokenVersion, 2);
   });
 });

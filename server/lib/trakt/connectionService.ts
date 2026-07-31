@@ -31,7 +31,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   In,
   IsNull,
-  LessThan,
+  LessThanOrEqual,
   MoreThan,
   QueryFailedError,
   type EntityManager,
@@ -194,32 +194,41 @@ export class TraktConnectionService {
 
     const authorizationFailure = await this.validateAuthorization(transaction);
     if (authorizationFailure) {
-      await traktConfigurationMutex.run(() =>
+      const resultCode = await traktConfigurationMutex.run(() =>
         this.failProcessingTransaction(transaction.id, authorizationFailure)
       );
-      const completion = completionFor(authorizationFailure, 400);
+      const completion = completionFor(
+        resultCode,
+        this.httpStatusFor(resultCode)
+      );
       this.logCompletion(completion, transaction.targetUserId ?? null, null);
       return completion;
     }
 
     if (input.error || !input.code) {
-      await traktConfigurationMutex.run(() =>
+      const resultCode = await traktConfigurationMutex.run(() =>
         this.failProcessingTransaction(transaction.id, 'access_denied')
       );
-      const completion = completionFor('access_denied', 400);
+      const completion = completionFor(
+        resultCode,
+        this.httpStatusFor(resultCode)
+      );
       this.logCompletion(completion, transaction.targetUserId ?? null, null);
       return completion;
     }
 
     const settings = getSettings().trakt;
     if (!isTraktConfigured(settings)) {
-      await traktConfigurationMutex.run(() =>
+      const resultCode = await traktConfigurationMutex.run(() =>
         this.failProcessingTransaction(
           transaction.id,
           'trakt_application_not_configured'
         )
       );
-      const completion = completionFor('trakt_application_not_configured', 400);
+      const completion = completionFor(
+        resultCode,
+        this.httpStatusFor(resultCode)
+      );
       this.logCompletion(completion, transaction.targetUserId ?? null, null);
       return completion;
     }
@@ -235,10 +244,13 @@ export class TraktConnectionService {
         tokens.accessToken
       ).getProfile();
     } catch {
-      await traktConfigurationMutex.run(() =>
+      const resultCode = await traktConfigurationMutex.run(() =>
         this.failProcessingTransaction(transaction.id, 'token_exchange_failed')
       );
-      const completion = completionFor('token_exchange_failed', 400);
+      const completion = completionFor(
+        resultCode,
+        this.httpStatusFor(resultCode)
+      );
       this.logCompletion(completion, transaction.targetUserId ?? null, null);
       return completion;
     }
@@ -256,17 +268,19 @@ export class TraktConnectionService {
       );
       return completion;
     } catch (error) {
-      const resultCode =
+      const requestedResultCode =
         error instanceof TraktConflictError
           ? error.code
           : error instanceof TerminalTransactionError
             ? error.resultCode
             : 'token_exchange_failed';
-      await traktConfigurationMutex.run(() =>
-        this.failProcessingTransaction(transaction.id, resultCode)
+      const resultCode = await traktConfigurationMutex.run(() =>
+        this.failProcessingTransaction(transaction.id, requestedResultCode)
       );
-      const httpStatus = error instanceof TraktConflictError ? 409 : 400;
-      const completion = completionFor(resultCode, httpStatus);
+      const completion = completionFor(
+        resultCode,
+        this.httpStatusFor(resultCode)
+      );
       this.logCompletion(completion, transaction.targetUserId ?? null, null);
       return completion;
     }
@@ -297,7 +311,7 @@ export class TraktConnectionService {
             actorUserId,
             status: TraktOAuthTransactionStatus.PENDING,
             consumedAt: IsNull(),
-            expiresAt: LessThan(now),
+            expiresAt: LessThanOrEqual(now),
           },
           {
             status: TraktOAuthTransactionStatus.FAILED,
@@ -319,7 +333,7 @@ export class TraktConnectionService {
             actorUserId,
             status: TraktOAuthTransactionStatus.PROCESSING,
             consumedAt: IsNull(),
-            expiresAt: LessThan(now),
+            expiresAt: LessThanOrEqual(now),
           },
           {
             status: TraktOAuthTransactionStatus.FAILED,
@@ -433,7 +447,7 @@ export class TraktConnectionService {
           id: transaction.id,
           status: TraktOAuthTransactionStatus.PENDING,
           consumedAt: IsNull(),
-          expiresAt: LessThan(now),
+          expiresAt: LessThanOrEqual(now),
         },
         {
           status: TraktOAuthTransactionStatus.FAILED,
@@ -603,8 +617,9 @@ export class TraktConnectionService {
   private async failProcessingTransaction(
     transactionId: string,
     resultCode: TraktSafeResultCode
-  ): Promise<void> {
-    await getRepository(TraktOAuthTransaction).update(
+  ): Promise<TraktSafeResultCode> {
+    const repo = getRepository(TraktOAuthTransaction);
+    const failure = await repo.update(
       {
         id: transactionId,
         status: TraktOAuthTransactionStatus.PROCESSING,
@@ -616,6 +631,12 @@ export class TraktConnectionService {
         consumedAt: new Date(),
       }
     );
+    if (failure.affected === 1) {
+      return resultCode;
+    }
+
+    const durable = await repo.findOneBy({ id: transactionId });
+    return this.toSafeResultCode(durable?.resultCode) ?? 'invalid_state';
   }
 
   private invalidateWatchStatus(connectionId: number): void {
@@ -650,6 +671,13 @@ export class TraktConnectionService {
       resultCode: 'invalid_state',
       httpStatus: 400,
     };
+  }
+
+  private httpStatusFor(resultCode: TraktSafeResultCode): 400 | 409 {
+    return resultCode === 'target_has_different_trakt_account' ||
+      resultCode === 'trakt_account_owned_by_another_user'
+      ? 409
+      : 400;
   }
 
   private hashState(rawState: string): string {
