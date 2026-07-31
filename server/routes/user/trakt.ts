@@ -101,7 +101,8 @@ traktUserRoutes.post<{ id: string }, TraktAuthorizationResponse>(
 traktUserRoutes.delete<{ id: string }>('/', async (req, res, next) => {
   try {
     const result = await new TraktConnectionService().unlink(
-      Number(req.params.id)
+      Number(req.params.id),
+      req.user!.id
     );
     return res.status(200).json(result);
   } catch (error) {

@@ -392,6 +392,46 @@ describe('TraktConnectionService', () => {
     assert.ok(row.expiresAt.getTime() <= Date.now() + 601_000);
   });
 
+  it('audits OAuth transaction creation with safe actor and target attribution', async () => {
+    const actor = await admin();
+    const target = await friend();
+    const entries: unknown[] = [];
+    const listener = (entry: unknown) => entries.push(entry);
+    const wasSilent = logger.silent;
+    logger.silent = false;
+    logger.on('data', listener);
+
+    let authorizationUrl: string;
+    try {
+      ({ authorizationUrl } =
+        await new TraktConnectionService().startAuthorization({
+          actorUserId: actor.id,
+          targetUserId: target.id,
+          origin: allowedOrigin,
+        }));
+    } finally {
+      logger.off('data', listener);
+      logger.silent = wasSilent;
+    }
+
+    const auditEntry = entries.find(
+      (entry) => (entry as { operation?: unknown }).operation === 'oauth_start'
+    ) as Record<string, unknown> | undefined;
+    assert.ok(auditEntry);
+    assert.equal(auditEntry.actorUserId, actor.id);
+    assert.equal(auditEntry.targetUserId, target.id);
+
+    const rawState = rawStateFrom(authorizationUrl);
+    const serialized = JSON.stringify(auditEntry);
+    assert.equal(serialized.includes(rawState), false);
+    assert.equal(serialized.includes(authorizationUrl), false);
+    assert.doesNotMatch(serialized, /client-id|client-secret/);
+    assert.doesNotMatch(
+      serialized,
+      /"(?:state|stateHash|authorizationUrl|clientId|clientSecret|accessToken|refreshToken)"\s*:/
+    );
+  });
+
   it('consumes callback state once and rejects replay, unknown state, and malformed stored origins safely', async () => {
     const actor = await admin();
     const service = new TraktConnectionService();

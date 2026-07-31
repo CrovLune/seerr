@@ -17,6 +17,7 @@ import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
 import { TraktWatchStatusService } from '@server/lib/trakt/watchStatusService';
+import logger from '@server/logger';
 import { setupTestDb } from '@server/test/db';
 import type { Express } from 'express';
 import express from 'express';
@@ -758,5 +759,59 @@ describe('Trakt account routes', () => {
       await getRepository(TraktConnection).countBy({ userId: friendUser.id }),
       0
     );
+  });
+
+  it('audits an administrator unlink with safe actor, target, and revoke attribution', async () => {
+    const actor = await getRepository(User).findOneByOrFail({
+      email: 'admin@seerr.dev',
+    });
+    const target = await getRepository(User).findOneByOrFail({
+      email: 'friend@seerr.dev',
+    });
+    const connectionRepo = getRepository(TraktConnection);
+    await connectionRepo.save(
+      connectionRepo.create({
+        userId: target.id,
+        traktUserId: 'safe-admin-unlink-target',
+        status: TraktConnectionStatus.ACTIVE,
+        accessToken: 'secret-admin-unlink-access',
+        refreshToken: 'secret-admin-unlink-refresh',
+        expiresAt: new Date('2030-01-01T00:00:00.000Z'),
+        tokenVersion: 1,
+        connectedByUserId: target.id,
+      })
+    );
+    mock.method(TraktAPI.prototype, 'revoke', async () => {
+      throw new Error('remote rejected secret-admin-unlink-access');
+    });
+    const entries: unknown[] = [];
+    const listener = (entry: unknown) => entries.push(entry);
+    const wasSilent = logger.silent;
+    logger.silent = false;
+    logger.on('data', listener);
+
+    let response: request.Response;
+    try {
+      const admin = await authenticatedAgent('admin@seerr.dev');
+      response = await admin.delete(`/user/${target.id}/settings/trakt`);
+    } finally {
+      logger.off('data', listener);
+      logger.silent = wasSilent;
+    }
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { remoteRevocationSucceeded: false });
+    const auditEntry = entries.find(
+      (entry) => (entry as { operation?: unknown }).operation === 'unlink'
+    ) as Record<string, unknown> | undefined;
+    assert.ok(auditEntry);
+    assert.equal(auditEntry.actorUserId, actor.id);
+    assert.equal(auditEntry.targetUserId, target.id);
+    assert.equal(auditEntry.remoteRevocationSucceeded, false);
+    assert.doesNotMatch(
+      JSON.stringify(auditEntry),
+      /secret-admin-unlink-(?:access|refresh)|"(?:accessToken|refreshToken)"\s*:/
+    );
+    assert.equal(await connectionRepo.countBy({ userId: target.id }), 0);
   });
 });

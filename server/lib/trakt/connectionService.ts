@@ -259,6 +259,13 @@ export class TraktConnectionService {
       });
       await getRepository(TraktOAuthTransaction).save(transaction);
 
+      logger.info('Trakt OAuth authorization started', {
+        label: 'Trakt',
+        operation: 'oauth_start',
+        actorUserId: actor.id,
+        targetUserId: target.id,
+      });
+
       const api = new TraktAPI(settings.clientId.trim(), settings.clientSecret);
       return {
         transactionId: transaction.id,
@@ -544,8 +551,12 @@ export class TraktConnectionService {
     }
   }
 
-  public async unlink(userId: number): Promise<TraktUnlinkResult> {
-    const connection = await this.findConnectionWithTokensByUserId(userId);
+  public async unlink(
+    targetUserId: number,
+    actorUserId = targetUserId
+  ): Promise<TraktUnlinkResult> {
+    const connection =
+      await this.findConnectionWithTokensByUserId(targetUserId);
     if (!connection) {
       throw new Error('Trakt connection not found');
     }
@@ -569,7 +580,8 @@ export class TraktConnectionService {
       label: 'Trakt',
       operation: 'unlink',
       connectionId: connection.id,
-      userId,
+      actorUserId,
+      targetUserId,
       remoteRevocationSucceeded,
       errorClass,
     });
