@@ -17,7 +17,7 @@ test('publishes only the household branch with least-privilege permissions', asy
   const workflow = await readWorkflow();
 
   assert.deepEqual(workflow.on, {
-    push: { branches: ['codex/trakt-household'] },
+    push: { branches: ['zeus-deploy'] },
   });
   assert.deepEqual(workflow.permissions, { contents: 'read' });
   assert.deepEqual(workflow.jobs.publish.permissions, {
