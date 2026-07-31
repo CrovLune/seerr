@@ -219,5 +219,9 @@
   },
   "scarfSettings": {
     "enabled": false
+  },
+  "volta": {
+    "node": "22.22.0",
+    "pnpm": "10.24.0"
   }
 }
