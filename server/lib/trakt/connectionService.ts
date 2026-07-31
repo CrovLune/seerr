@@ -363,7 +363,17 @@ export class TraktConnectionService {
         settings.clientSecret,
         tokens.accessToken
       ).getProfile();
-    } catch {
+    } catch (error) {
+      // The user-facing result code stays generic, but without the underlying reason a
+      // failed handshake is indistinguishable from a rejected one.
+      logger.error('Trakt OAuth handshake failed', {
+        label: 'Trakt',
+        operation: 'oauth_handshake_failed',
+        targetUserId: transaction.targetUserId ?? null,
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+        errorCode: error instanceof TraktApiError ? error.code : undefined,
+        errorMessage: error instanceof Error ? error.message : undefined,
+      });
       const resultCode = await traktConfigurationMutex.run(() =>
         this.failProcessingTransaction(transaction.id, 'token_exchange_failed')
       );

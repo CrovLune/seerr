@@ -199,9 +199,14 @@ describe('TraktAPI API protocol', () => {
     const { client, apiHttp } = buildClient();
     const get = mock.method(apiHttp, 'get', async () => ({
       data: {
-        username: 'mutable-username',
-        name: 'Mutable display name',
-        ids: { trakt: 12345, slug: 'mutable-slug' },
+        user: {
+          username: 'mutable-username',
+          name: 'Mutable display name',
+          ids: {
+            slug: 'mutable-slug',
+            uuid: '4ceb2f68-1f8a-4f4a-9b1e-1c8a6b2f4d3e',
+          },
+        },
       },
     }));
 
@@ -212,9 +217,9 @@ describe('TraktAPI API protocol', () => {
       username: 'mutable-username',
       slug: 'mutable-slug',
       displayName: 'Mutable display name',
-      traktUserId: '12345',
+      traktUserId: '4ceb2f68-1f8a-4f4a-9b1e-1c8a6b2f4d3e',
     });
-    assert.equal(get.mock.calls[0]!.arguments[0], '/users/me');
+    assert.equal(get.mock.calls[0]!.arguments[0], '/users/settings');
     assertApiRequest(get.mock.calls[0]!.arguments[1]);
     assert.equal(client.didValidateAccessToken(), true);
   });
@@ -222,7 +227,7 @@ describe('TraktAPI API protocol', () => {
   it('rejects a profile without a stable Trakt ID', async () => {
     const { client, apiHttp } = buildClient();
     mock.method(apiHttp, 'get', async () => ({
-      data: { name: 'secret display name', ids: {} },
+      data: { user: { name: 'secret display name', ids: { slug: 'a-slug' } } },
     }));
 
     await assert.rejects(
@@ -241,7 +246,12 @@ describe('TraktAPI API protocol', () => {
   it('rejects a profile with an invalid stable Trakt ID', async () => {
     const { client, apiHttp } = buildClient();
     mock.method(apiHttp, 'get', async () => ({
-      data: { name: 'secret display name', ids: { trakt: 'not-an-id' } },
+      data: {
+        user: {
+          name: 'secret display name',
+          ids: { slug: 'a-slug', uuid: '' },
+        },
+      },
     }));
 
     await assert.rejects(

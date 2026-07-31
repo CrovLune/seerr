@@ -1365,9 +1365,14 @@ describe('TraktConnectionService', () => {
     const apiHttp = axios.create();
     mock.method(apiHttp, 'get', async () => ({
       data: {
-        username: 'validated-user',
-        name: 'Validated User',
-        ids: { trakt: 101, slug: 'validated-user' },
+        user: {
+          username: 'validated-user',
+          name: 'Validated User',
+          ids: {
+            slug: 'validated-user',
+            uuid: '9f1c7a52-3d64-4b8e-a0c1-72d5e8b3f419',
+          },
+        },
       },
     }));
     let createCalls = 0;

@@ -39,12 +39,14 @@ interface TraktTokenResponse {
   expires_in: number;
 }
 
-interface TraktProfileResponse {
-  username?: string;
-  name?: string;
-  ids?: {
-    trakt?: unknown;
-    slug?: string;
+interface TraktSettingsResponse {
+  user?: {
+    username?: string;
+    name?: string;
+    ids?: {
+      slug?: string;
+      uuid?: unknown;
+    };
   };
 }
 
@@ -144,17 +146,17 @@ export default class TraktAPI {
 
   public async getProfile(): Promise<TraktProfile> {
     try {
-      const response = await this.apiHttp.get<TraktProfileResponse>(
-        '/users/me',
+      const response = await this.apiHttp.get<TraktSettingsResponse>(
+        '/users/settings',
         this.apiRequestConfig()
       );
-      const profile = response.data;
+      const user = response.data.user;
 
       const result = {
-        username: profile.username ?? null,
-        slug: profile.ids?.slug ?? null,
-        displayName: profile.name ?? null,
-        traktUserId: this.getStableProfileId(profile),
+        username: user?.username ?? null,
+        slug: user?.ids?.slug ?? null,
+        displayName: user?.name ?? null,
+        traktUserId: this.getStableProfileId(response.data),
       };
       this.accessTokenValidated = true;
       return result;
@@ -232,14 +234,16 @@ export default class TraktAPI {
     };
   }
 
-  private getStableProfileId(profile: TraktProfileResponse): string {
-    const traktId = profile.ids?.trakt;
+  /**
+   * Trakt users have no numeric id: `ids.trakt` is documented nullable and is absent in
+   * practice, and `ids.slug` follows username changes. Only the `uuid` from
+   * `/users/settings` is documented as globally unique and stable, so it is the identity
+   * a connection is keyed on.
+   */
+  private getStableProfileId(settings: TraktSettingsResponse): string {
+    const uuid = settings.user?.ids?.uuid;
 
-    if (
-      typeof traktId !== 'number' ||
-      !Number.isSafeInteger(traktId) ||
-      traktId <= 0
-    ) {
+    if (typeof uuid !== 'string' || uuid.trim().length === 0) {
       throw new TraktApiError(
         'Trakt returned an invalid profile',
         0,
@@ -247,7 +251,7 @@ export default class TraktAPI {
       );
     }
 
-    return String(traktId);
+    return uuid;
   }
 
   private apiRequestConfig(
