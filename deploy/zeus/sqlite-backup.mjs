@@ -65,7 +65,11 @@ const assertDestinationAbsent = async (destinationPath) => {
   throw new Error(`destination already exists: ${destinationPath}`);
 };
 
-export const promoteVerifiedPartial = async (partialPath, destinationPath) => {
+export const promoteVerifiedPartial = async (
+  partialPath,
+  destinationPath,
+  { removePartial = unlink } = {}
+) => {
   try {
     await link(partialPath, destinationPath);
   } catch (error) {
@@ -78,10 +82,13 @@ export const promoteVerifiedPartial = async (partialPath, destinationPath) => {
   }
 
   try {
-    await unlink(partialPath);
-    return { partialRetained: false };
-  } catch {
-    return { partialRetained: true };
+    await removePartial(partialPath);
+    return { partialRetained: false, partialPath: null };
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { partialRetained: false, partialPath: null };
+    }
+    return { partialRetained: true, partialPath };
   }
 };
 
@@ -121,13 +128,18 @@ export const backupDatabase = async (sourcePath, destinationPath) => {
     }
 
     const partialStat = await stat(partialPath);
-    await promoteVerifiedPartial(partialPath, destinationPath);
+    const promotion = await promoteVerifiedPartial(
+      partialPath,
+      destinationPath
+    );
 
     return {
       sourcePath,
       destinationPath,
       bytes: partialStat.size,
       integrity: 'ok',
+      partialRetained: promotion.partialRetained,
+      partialPath: promotion.partialPath,
     };
   } catch (error) {
     throw new Error(
@@ -161,6 +173,11 @@ if (isMain) {
       console.log(`destination path: ${result.destinationPath}`);
       console.log(`byte count: ${result.bytes}`);
       console.log(`integrity result: ${result.integrity}`);
+      console.log(
+        result.partialRetained
+          ? `partial cleanup result: retained at ${result.partialPath}`
+          : 'partial cleanup result: removed'
+      );
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

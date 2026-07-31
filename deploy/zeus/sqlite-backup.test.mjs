@@ -108,6 +108,8 @@ test('creates a consistent atomic backup of committed WAL data', async () => {
     assert.equal(result.destinationPath, destinationPath);
     assert.equal(result.integrity, 'ok');
     assert.ok(result.bytes > 0);
+    assert.equal(result.partialRetained, false);
+    assert.equal(result.partialPath, null);
   } finally {
     await close(destinationDatabase);
   }
@@ -172,6 +174,30 @@ test('atomically rejects a destination that exists at promotion time', async () 
   );
   assert.equal(await readFile(destinationPath, 'utf8'), existingEvidence);
   assert.equal(await readFile(partialPath, 'utf8'), partialContents);
+});
+
+test('reports the exact retained partial after promotion cleanup fails', async () => {
+  const promoteVerifiedPartial = await loadPromoteVerifiedPartial();
+  const partialPath = path.join(fixtureRoot, '.cleanup-failure.partial');
+  const destinationPath = path.join(fixtureRoot, 'cleanup-failure.sqlite3');
+  const partialContents = 'verified cleanup failure evidence';
+  const partial = await open(partialPath, 'wx');
+  await partial.writeFile(partialContents);
+  await partial.close();
+
+  const result = await promoteVerifiedPartial(partialPath, destinationPath, {
+    removePartial: async () => {
+      throw new Error('injected cleanup failure');
+    },
+  });
+
+  assert.deepEqual(result, { partialRetained: true, partialPath });
+  assert.equal(await readFile(destinationPath, 'utf8'), partialContents);
+  assert.equal(await readFile(partialPath, 'utf8'), partialContents);
+  assert.equal(
+    (await stat(destinationPath)).ino,
+    (await stat(partialPath)).ino
+  );
 });
 
 test('retains and reports a partial after a corrupt source backup fails', async () => {

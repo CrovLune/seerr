@@ -4,6 +4,13 @@ This directory is the committed, secret-free deployment package for the Seerr
 v3.4.1 Trakt migration. It prepares an isolated rehearsal and a same-domain
 cutover; it does not contain live state.
 
+Before copying any command block, start one persistent Bash shell with
+`bash --noprofile --norc` and keep that shell open for the related rehearsal,
+cutover, or rollback sequence so its validated context variables persist. Every
+Bash block repeats `set -Eeuo pipefail`; a failed guard, command, pipeline, or
+unset variable therefore aborts that block before its next action. Do not paste
+these blocks into a shell that ignores those Bash semantics.
+
 ## Directory layout
 
 Repository package:
@@ -18,6 +25,7 @@ deploy/zeus/
 ├── compose.yaml
 ├── inventory-db.mjs
 ├── inventory-db.test.mjs
+├── readme-runbook.test.mjs
 ├── sanitize-trakt-settings.mjs
 ├── sanitize-trakt-settings.test.mjs
 ├── sqlite-backup.mjs
@@ -53,6 +61,7 @@ registry token belongs in this directory or an image layer.
 Build and resolve the release image from the intended Git commit:
 
 ```bash
+set -Eeuo pipefail
 cd /Users/crovlune/Development/pet-projects/seerr
 SEERR_COMMIT_SHA="$(git rev-parse HEAD)"
 SEERR_SOURCE_EPOCH="$(git show -s --format=%ct HEAD)"
@@ -69,6 +78,7 @@ docker buildx imagetools inspect ghcr.io/crovlune/seerr:3.4.1-trakt.1
 Record the inspected digest, not the tag, in the Zeus `.env` and validate it:
 
 ```bash
+set -Eeuo pipefail
 chmod 0600 .env
 SEERR_IMAGE_REF="$(awk -F= '$1 == "SEERR_IMAGE" { print $2 }' .env)"
 printf '%s\n' "$SEERR_IMAGE_REF" |
@@ -82,6 +92,7 @@ it already exists, stop and preserve it under an explicit timestamped name
 before retrying.
 
 ```bash
+set -Eeuo pipefail
 REHEARSAL_ROOT=/home/crovlune/containers/seerr-rehearsal
 OLD_CONFIG_ROOT=/home/crovlune/containers/overseerr/config
 test ! -e "$REHEARSAL_ROOT"
@@ -104,6 +115,7 @@ Create `$REHEARSAL_ROOT/.env` with only the validated digest-pinned
 image ID before using it as the migration-tool runtime:
 
 ```bash
+set -Eeuo pipefail
 OLD_IMAGE_ID="$(docker inspect overseerr --format '{{.Image}}')"
 printf '%s\n' "$OLD_IMAGE_ID" | grep -E '^sha256:[0-9a-f]{64}$'
 rsync -a --exclude '/db/' --exclude '/logs/' --exclude '/cache/' \
@@ -128,15 +140,19 @@ docker run --rm --user 1000:1000 --entrypoint node \
 ```
 
 The backup helper accepts exactly two absolute paths, never overwrites a
-destination, and retains a failed partial database as evidence. The sanitizer
-accepts only the copied settings file, removes only its top-level `trakt`
-property, and writes the temporary and final file with mode `0600`.
+destination, and retains a failed partial database as evidence. On success it
+prints whether partial cleanup completed; if cleanup fails after atomic
+publication, it reports the exact retained hard-link path while keeping the
+valid destination and a successful exit. The sanitizer accepts only the copied
+settings file, removes only its top-level `trakt` property, and writes the
+temporary and final file with mode `0600`.
 
 Render the merged Compose model before starting. The dummy digest below is for
 local interpolation validation only; rehearsal and production use the real
 digest from `.env`.
 
 ```bash
+set -Eeuo pipefail
 SEERR_IMAGE=ghcr.io/crovlune/seerr@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   docker compose -f deploy/zeus/compose.yaml \
   -f deploy/zeus/compose.rehearsal.yaml config >/dev/null
@@ -158,6 +174,7 @@ claim production routing. Before any disposable rehearsal write, generate the
 migrated inventory and compare it:
 
 ```bash
+set -Eeuo pipefail
 cd "$REHEARSAL_ROOT"
 SEERR_IMAGE_REF="$(awk -F= '$1 == "SEERR_IMAGE" { print $2 }' .env)"
 docker run --rm --user 1000:1000 --entrypoint node \
@@ -180,6 +197,7 @@ rows in `trakt_connection`.
 Stop rehearsal while preserving its config and evidence:
 
 ```bash
+set -Eeuo pipefail
 docker compose --env-file .env \
   -f compose.yaml -f compose.rehearsal.yaml down
 ```
@@ -195,6 +213,7 @@ Prove the live service still uses the expected Compose and bind paths, then
 create one new UTC backup root:
 
 ```bash
+set -Eeuo pipefail
 test "$(docker inspect overseerr --format '{{.State.Running}}')" = true
 test "$(docker inspect overseerr --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}')" = \
   /home/crovlune/containers/overseerr/docker-compose.yml
@@ -289,6 +308,7 @@ test "$(cat "$ACTIVE_CUTOVER_FILE")" = "$CUTOVER_BACKUP_ROOT"
 After any reconnect, restore only this explicitly recorded context:
 
 ```bash
+set -Eeuo pipefail
 CUTOVER_BACKUP_ROOT="$(
   cat /home/crovlune/backups/seerr-cutover/active-cutover.txt
 )"
@@ -326,6 +346,7 @@ Stopping precedes `cp -a`, so the raw archive includes a coherent complete
 config and any SQLite WAL/SHM files that exist.
 
 ```bash
+set -Eeuo pipefail
 cd /home/crovlune/containers/overseerr
 docker compose -f docker-compose.yml stop overseerr
 test "$(docker inspect overseerr --format '{{.State.Status}}')" = exited
@@ -375,6 +396,7 @@ The final root is new. Sanitization and migration operate only on copies under
 the final or cutover backup roots.
 
 ```bash
+set -Eeuo pipefail
 SEERR_ROOT=/home/crovlune/containers/seerr
 test ! -e "$SEERR_ROOT"
 install -d -m 0700 "$SEERR_ROOT"
@@ -453,6 +475,7 @@ Only after every backup/copy check succeeds, remove the stopped old Compose
 project without deleting volumes:
 
 ```bash
+set -Eeuo pipefail
 cd /home/crovlune/containers/overseerr
 docker compose -f docker-compose.yml down --remove-orphans
 test -z "$(docker ps -aq --filter name='^overseerr$')"
@@ -465,6 +488,7 @@ docker image inspect "$OLD_IMAGE_ID" > /dev/null
 ### 4. Validate, start, and identify the immutable Seerr deployment
 
 ```bash
+set -Eeuo pipefail
 cd /home/crovlune/containers/seerr
 SEERR_IMAGE_REF="$(awk -F= '$1 == "SEERR_IMAGE" { print $2 }' .env)"
 printf '%s\n' "$SEERR_IMAGE_REF" |
@@ -512,6 +536,7 @@ claim the production hosts.
 Run the container check on Zeus and the domain checks from the Mac/LAN:
 
 ```bash
+set -Eeuo pipefail
 docker exec seerr \
   wget -q -O - http://127.0.0.1:5055/api/v1/status/appdata
 curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' \
@@ -530,7 +555,14 @@ from a LAN source address.
 ### 6. Compare final migrated data before configuration or requests
 
 ```bash
-cd /home/crovlune/containers/seerr
+set -Eeuo pipefail
+SEERR_ROOT=/home/crovlune/containers/seerr
+SEERR_IMAGE_REF="$(
+  awk -F= '$1 == "SEERR_IMAGE" { print $2 }' "$SEERR_ROOT/.env"
+)"
+printf '%s\n' "$SEERR_IMAGE_REF" |
+  grep -E '^ghcr\.io/crovlune/seerr@sha256:[0-9a-f]{64}$'
+cd "$SEERR_ROOT"
 docker run --rm \
   --user 1000:1000 \
   --entrypoint node \
@@ -567,6 +599,7 @@ Before the first Seerr write, verify in the production browser:
 After that first write, record that snapshot rollback will lose new changes:
 
 ```bash
+set -Eeuo pipefail
 printf 'automatic_database_rollback=false\nfirst_seerr_write_recorded_at=%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$CUTOVER_BACKUP_ROOT/post-cutover-write.txt"
@@ -590,6 +623,7 @@ validate the explicit context, verify both archive checksums before use, then
 load the exact old image:
 
 ```bash
+set -Eeuo pipefail
 CUTOVER_BACKUP_ROOT="$(
   cat /home/crovlune/backups/seerr-cutover/active-cutover.txt
 )"
@@ -609,15 +643,16 @@ ROLLBACK_IMAGE_REF="$(
 printf '%s\n' "$OLD_IMAGE_ID" | grep -E '^sha256:[0-9a-f]{64}$'
 test -n "$ROLLBACK_IMAGE_REF"
 
-cd /home/crovlune/containers/seerr
-docker compose --env-file .env -f compose.yaml down --remove-orphans
 sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz.sha256"
 gzip -t "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz"
+sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz.sha256"
 gzip -dc "$CUTOVER_BACKUP_ROOT/overseerr-image.tar.gz" | docker image load
 test "$(docker image inspect "$ROLLBACK_IMAGE_REF" --format '{{.Id}}')" = \
   "$OLD_IMAGE_ID"
-sha256sum -c "$CUTOVER_BACKUP_ROOT/overseerr-config-raw.tar.gz.sha256"
 test -d /home/crovlune/containers/overseerr/config
+
+cd /home/crovlune/containers/seerr
+docker compose --env-file .env -f compose.yaml down --remove-orphans
 docker compose \
   -f "$CUTOVER_BACKUP_ROOT/docker-compose.rollback.yml" \
   up -d --pull never
@@ -640,6 +675,7 @@ Generate a fresh safe inventory from the unchanged old database, compare it
 with the cutover source evidence, and verify both domains:
 
 ```bash
+set -Eeuo pipefail
 SEERR_ROOT=/home/crovlune/containers/seerr
 docker run --rm \
   --user 1000:1000 \
