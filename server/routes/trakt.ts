@@ -12,6 +12,16 @@ traktRoutes.get('/oauth/:transactionId/status', async (req, res, next) => {
       req.params.transactionId,
       req.user.id
     );
+    if (
+      status.status === 'failed' &&
+      (status.resultCode === 'target_has_different_trakt_account' ||
+        status.resultCode === 'trakt_account_owned_by_another_user')
+    ) {
+      return res.status(409).json({
+        message: 'Trakt account conflict.',
+        code: status.resultCode,
+      });
+    }
     return res.status(200).json(status);
   } catch (error) {
     const message =

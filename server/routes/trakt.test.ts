@@ -15,15 +15,19 @@ import { User } from '@server/entity/User';
 import cacheManager from '@server/lib/cache';
 import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
+import { TraktConnectionService } from '@server/lib/trakt/connectionService';
 import { setupTestDb } from '@server/test/db';
 import type { Express } from 'express';
 import express from 'express';
+import * as OpenApiValidator from 'express-openapi-validator';
 import session from 'express-session';
+import path from 'path';
 import request from 'supertest';
 import routes from './index';
 
 const allowedOrigin = 'https://overseerr.pixeltrophies.com';
 let app: Express;
+let validatedApp: Express;
 
 function createApp(): Express {
   const testApp = express();
@@ -55,10 +59,41 @@ function createApp(): Express {
   return testApp;
 }
 
+function createValidatedApp(): Express {
+  const testApp = express();
+  testApp.use(express.json());
+  testApp.use(
+    session({ secret: 'test-secret', resave: false, saveUninitialized: false })
+  );
+  testApp.use(
+    OpenApiValidator.middleware({
+      apiSpec: path.join(process.cwd(), 'seerr-api.yml'),
+      validateRequests: true,
+    })
+  );
+  testApp.use('/api/v1', routes);
+  testApp.use(
+    (
+      err: { status?: number; message?: string; errors?: string[] },
+      _req: express.Request,
+      res: express.Response,
+      // Match the production four-argument error serializer.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      _next: express.NextFunction
+    ) =>
+      res.status(err.status ?? 500).json({
+        message: err.message,
+        errors: err.errors,
+      })
+  );
+  return testApp;
+}
+
 setupTestDb();
 
 before(() => {
   app = createApp();
+  validatedApp = createValidatedApp();
 });
 
 beforeEach(() => {
@@ -84,6 +119,74 @@ async function authenticatedAgent(email: string) {
 }
 
 describe('Trakt account routes', () => {
+  it('loads the production OpenAPI validator and reaches a Trakt route', async () => {
+    const friendUser = await getRepository(User).findOneByOrFail({
+      email: 'friend@seerr.dev',
+    });
+    getSettings().main.apiKey = 'validator-test-api-key';
+    const response = await request(validatedApp)
+      .get(`/api/v1/user/${friendUser.id}/settings/trakt`)
+      .set('X-API-Key', 'validator-test-api-key')
+      .set('X-API-User', String(friendUser.id));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, {
+      applicationConfigured: true,
+      connection: null,
+    });
+  });
+
+  it('preserves stable 409 codes through the production error stack', async () => {
+    const adminUser = await getRepository(User).findOneByOrFail({
+      email: 'admin@seerr.dev',
+    });
+    getSettings().main.apiKey = 'validator-test-api-key';
+    const requestAsAdmin = () =>
+      request(validatedApp)
+        .put('/api/v1/settings/trakt')
+        .set('X-API-Key', 'validator-test-api-key')
+        .set('X-API-User', String(adminUser.id));
+
+    const precheck = await requestAsAdmin().send({
+      clientId: 'replacement-client',
+    });
+    assert.equal(precheck.status, 409);
+    assert.deepEqual(precheck.body, {
+      message: 'Confirm reconnect all is required.',
+      code: 'confirm_reconnect_all_required',
+    });
+
+    const update = mock.method(
+      TraktConnectionService.prototype,
+      'updateApplicationSettings',
+      async () => {
+        throw new Error('Confirm reconnect all is required');
+      }
+    );
+    const serviceRace = await requestAsAdmin().send({ clientId: 'client-id' });
+    assert.equal(update.mock.callCount(), 1);
+    assert.equal(serviceRace.status, 409);
+    assert.deepEqual(serviceRace.body, {
+      message: 'Confirm reconnect all is required.',
+      code: 'confirm_reconnect_all_required',
+    });
+  });
+
+  it('keeps callback static-error handling intact behind the validator', async () => {
+    const response = await request(validatedApp)
+      .get('/api/v1/auth/trakt/callback')
+      .query({ state: 'unknown-state', code: 'oauth-code' });
+
+    assert.equal(response.status, 400);
+    assert.match(response.headers['content-type'], /^text\/html/);
+    assert.equal(
+      response.headers['content-security-policy'],
+      "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    );
+    assert.equal(response.text.includes('script'), false);
+    assert.equal(response.text.includes('unknown-state'), false);
+  });
+
   it('requires authentication and ADMIN for application settings', async () => {
     assert.equal((await request(app).get('/settings/trakt')).status, 401);
     assert.equal(
@@ -280,9 +383,14 @@ describe('Trakt account routes', () => {
       email: 'friend@seerr.dev',
     });
     const friend = await authenticatedAgent('friend@seerr.dev');
+    const transactionCount = await getRepository(TraktOAuthTransaction).count();
     assert.equal(
       (await friend.post(`/user/${friendUser.id}/settings/trakt/auth`)).status,
       400
+    );
+    assert.equal(
+      await getRepository(TraktOAuthTransaction).count(),
+      transactionCount
     );
     assert.equal(
       (
@@ -291,6 +399,10 @@ describe('Trakt account routes', () => {
           .set('Origin', 'https://attacker.invalid')
       ).status,
       400
+    );
+    assert.equal(
+      await getRepository(TraktOAuthTransaction).count(),
+      transactionCount
     );
     const response = await friend
       .post(`/user/${friendUser.id}/settings/trakt/auth`)
@@ -441,10 +553,11 @@ describe('Trakt account routes', () => {
     const targetPoll = await friend.get(
       `/trakt/oauth/${targetStart.body.transactionId}/status`
     );
-    assert.equal(
-      targetPoll.body.resultCode,
-      'target_has_different_trakt_account'
-    );
+    assert.equal(targetPoll.status, 409);
+    assert.deepEqual(targetPoll.body, {
+      message: 'Trakt account conflict.',
+      code: 'target_has_different_trakt_account',
+    });
     assert.equal('ownerUserId' in targetPoll.body, false);
     assert.equal('ownerName' in targetPoll.body, false);
 
@@ -479,10 +592,11 @@ describe('Trakt account routes', () => {
     const identityPoll = await friend.get(
       `/trakt/oauth/${identityStart.body.transactionId}/status`
     );
-    assert.equal(
-      identityPoll.body.resultCode,
-      'trakt_account_owned_by_another_user'
-    );
+    assert.equal(identityPoll.status, 409);
+    assert.deepEqual(identityPoll.body, {
+      message: 'Trakt account conflict.',
+      code: 'trakt_account_owned_by_another_user',
+    });
     assert.equal('ownerUserId' in identityPoll.body, false);
     assert.equal('ownerName' in identityPoll.body, false);
   });

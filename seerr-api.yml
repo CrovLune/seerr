@@ -129,6 +129,7 @@ components:
         applicationConfigured:
           type: boolean
         connection:
+          type: object
           nullable: true
           allOf:
             - $ref: '#/components/schemas/TraktConnection'
@@ -207,6 +208,18 @@ components:
           type: integer
           nullable: true
           description: Present only when the requesting actor has ADMIN.
+    TraktSettingsConflict:
+      type: object
+      required:
+        - message
+        - code
+      properties:
+        message:
+          type: string
+        code:
+          type: string
+          enum:
+            - confirm_reconnect_all_required
     Blocklist:
       type: object
       properties:
@@ -2401,6 +2414,10 @@ paths:
           description: Invalid credential input
         '409':
           description: Reconnect-all confirmation required for a client-ID change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraktSettingsConflict'
   /settings/trakt/connections:
     get:
       summary: List all Trakt connection summaries
