@@ -43,7 +43,7 @@ interface TraktProfileResponse {
   username?: string;
   name?: string;
   ids?: {
-    trakt?: number;
+    trakt?: unknown;
     slug?: string;
   };
 }
@@ -86,7 +86,6 @@ export default class TraktAPI {
 
   public async exchangeCode(code: string): Promise<TraktTokenSet> {
     try {
-      const receiptTime = Date.now();
       const response = await this.authHttp.post<TraktTokenResponse>(
         `${TRAKT_AUTH_URL}/oauth/token`,
         {
@@ -99,7 +98,7 @@ export default class TraktAPI {
         { timeout: REQUEST_TIMEOUT }
       );
 
-      return this.toTokenSet(response.data, receiptTime);
+      return this.toTokenSet(response.data, Date.now());
     } catch (error) {
       throw this.toApiError(error);
     }
@@ -107,7 +106,6 @@ export default class TraktAPI {
 
   public async refresh(refreshToken: string): Promise<TraktTokenSet> {
     try {
-      const receiptTime = Date.now();
       const response = await this.authHttp.post<TraktTokenResponse>(
         `${TRAKT_AUTH_URL}/oauth/token`,
         {
@@ -120,7 +118,7 @@ export default class TraktAPI {
         { timeout: REQUEST_TIMEOUT }
       );
 
-      return this.toTokenSet(response.data, receiptTime);
+      return this.toTokenSet(response.data, Date.now());
     } catch (error) {
       throw this.toApiError(error);
     }
@@ -154,7 +152,7 @@ export default class TraktAPI {
         username: profile.username ?? null,
         slug: profile.ids?.slug ?? null,
         displayName: profile.name ?? null,
-        traktUserId: String(profile.ids?.trakt),
+        traktUserId: this.getStableProfileId(profile),
       };
     } catch (error) {
       throw this.toApiError(error);
@@ -224,6 +222,24 @@ export default class TraktAPI {
     };
   }
 
+  private getStableProfileId(profile: TraktProfileResponse): string {
+    const traktId = profile.ids?.trakt;
+
+    if (
+      typeof traktId !== 'number' ||
+      !Number.isSafeInteger(traktId) ||
+      traktId <= 0
+    ) {
+      throw new TraktApiError(
+        'Trakt returned an invalid profile',
+        0,
+        'INVALID_RESPONSE'
+      );
+    }
+
+    return String(traktId);
+  }
+
   private apiRequestConfig(
     config: AxiosRequestConfig = {}
   ): AxiosRequestConfig {
@@ -241,6 +257,10 @@ export default class TraktAPI {
   }
 
   private toApiError(error: unknown): TraktApiError {
+    if (error instanceof TraktApiError) {
+      return error;
+    }
+
     const response =
       typeof error === 'object' && error !== null && 'response' in error
         ? (error.response as {

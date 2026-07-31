@@ -94,21 +94,54 @@ describe('TraktAPI OAuth protocol', () => {
     ]);
   });
 
-  it('uses receipt time when a token response has no created_at', async () => {
+  it('uses code-exchange response receipt time when created_at is absent', async () => {
     const { client, authHttp } = buildClient();
-    mock.method(authHttp, 'post', async () => ({
-      data: {
-        access_token: 'new-access-token',
-        refresh_token: 'new-refresh-token',
-        expires_in: 60,
-      },
-    }));
-    const startedAt = Date.now();
+    let now = 1_000;
+    mock.method(Date, 'now', () => now);
+    mock.method(authHttp, 'post', async () => {
+      now = 2_000;
 
-    const tokenSet = await client.exchangeCode('authorization-code');
+      return {
+        data: {
+          access_token: 'new-access-token',
+          refresh_token: 'new-refresh-token',
+          expires_in: 60,
+        },
+      };
+    });
 
-    assert.ok(tokenSet.expiresAt.getTime() >= startedAt + 60_000);
-    assert.ok(tokenSet.expiresAt.getTime() <= Date.now() + 60_000);
+    try {
+      const tokenSet = await client.exchangeCode('authorization-code');
+
+      assert.equal(tokenSet.expiresAt.getTime(), 62_000);
+    } finally {
+      mock.restoreAll();
+    }
+  });
+
+  it('uses refresh response receipt time when created_at is absent', async () => {
+    const { client, authHttp } = buildClient();
+    let now = 1_000;
+    mock.method(Date, 'now', () => now);
+    mock.method(authHttp, 'post', async () => {
+      now = 2_000;
+
+      return {
+        data: {
+          access_token: 'new-access-token',
+          refresh_token: 'new-refresh-token',
+          expires_in: 60,
+        },
+      };
+    });
+
+    try {
+      const tokenSet = await client.refresh('refresh-token');
+
+      assert.equal(tokenSet.expiresAt.getTime(), 62_000);
+    } finally {
+      mock.restoreAll();
+    }
   });
 
   it('refreshes a token at the auth host with the exact OAuth body', async () => {
@@ -176,6 +209,44 @@ describe('TraktAPI API protocol', () => {
     });
     assert.equal(get.mock.calls[0]!.arguments[0], '/users/me');
     assertApiRequest(get.mock.calls[0]!.arguments[1]);
+  });
+
+  it('rejects a profile without a stable Trakt ID', async () => {
+    const { client, apiHttp } = buildClient();
+    mock.method(apiHttp, 'get', async () => ({
+      data: { name: 'secret display name', ids: {} },
+    }));
+
+    await assert.rejects(
+      () => client.getProfile(),
+      (error: unknown) => {
+        assert.ok(error instanceof TraktApiError);
+        const traktError = error as TraktApiError;
+        assert.equal(traktError.status, 0);
+        assert.equal(traktError.code, 'INVALID_RESPONSE');
+        assert.equal(traktError.message.includes('secret'), false);
+        return true;
+      }
+    );
+  });
+
+  it('rejects a profile with an invalid stable Trakt ID', async () => {
+    const { client, apiHttp } = buildClient();
+    mock.method(apiHttp, 'get', async () => ({
+      data: { name: 'secret display name', ids: { trakt: 'not-an-id' } },
+    }));
+
+    await assert.rejects(
+      () => client.getProfile(),
+      (error: unknown) => {
+        assert.ok(error instanceof TraktApiError);
+        const traktError = error as TraktApiError;
+        assert.equal(traktError.status, 0);
+        assert.equal(traktError.code, 'INVALID_RESPONSE');
+        assert.equal(traktError.message.includes('secret'), false);
+        return true;
+      }
+    );
   });
 
   it('maps movies by TMDB ID using only the movie result ID', async () => {
