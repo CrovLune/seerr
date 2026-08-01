@@ -1,11 +1,19 @@
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { randomBytes } from 'node:crypto';
 
 const traktCallbackRoutes = Router();
 
 const staticErrorPage =
   '<!doctype html><meta charset="utf-8"><title>Trakt connection</title><p>Trakt connection could not be completed.</p>';
+
+const sendStaticOAuthError = (res: Response, status: number): Response => {
+  res.set(
+    'Content-Security-Policy',
+    "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+  );
+  return res.status(status).send(staticErrorPage);
+};
 
 traktCallbackRoutes.get('/callback', async (req, res) => {
   res.type('html');
@@ -19,11 +27,7 @@ traktCallbackRoutes.get('/callback', async (req, res) => {
   const error =
     typeof req.query.error === 'string' ? req.query.error : undefined;
   if (!state || (!code && !error)) {
-    res.set(
-      'Content-Security-Policy',
-      "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-    );
-    return res.status(400).send(staticErrorPage);
+    return sendStaticOAuthError(res, 400);
   }
 
   try {
@@ -33,11 +37,7 @@ traktCallbackRoutes.get('/callback', async (req, res) => {
       error,
     });
     if (!outcome.canNotifyOpener) {
-      res.set(
-        'Content-Security-Policy',
-        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-      );
-      return res.status(outcome.httpStatus).send(staticErrorPage);
+      return sendStaticOAuthError(res, outcome.httpStatus);
     }
 
     const nonce = randomBytes(18).toString('base64url');
@@ -58,11 +58,7 @@ traktCallbackRoutes.get('/callback', async (req, res) => {
           `<script nonce="${nonce}">window.opener?.postMessage(${message},${targetOrigin});window.close();</script>`
       );
   } catch {
-    res.set(
-      'Content-Security-Policy',
-      "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-    );
-    return res.status(500).send(staticErrorPage);
+    return sendStaticOAuthError(res, 500);
   }
 });
 

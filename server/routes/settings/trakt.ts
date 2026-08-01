@@ -7,6 +7,7 @@ import type {
 } from '@server/interfaces/api/traktInterfaces';
 import { getSettings } from '@server/lib/settings';
 import { getSafeTraktSettings } from '@server/lib/trakt/config';
+import { toConnectionResponse } from '@server/lib/trakt/connectionResponse';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
 import { Router } from 'express';
 
@@ -16,21 +17,6 @@ interface TraktSettingsConflictResponse {
   message: string;
   code: 'confirm_reconnect_all_required';
 }
-
-const toConnectionResponse = (
-  connection: TraktConnection
-): TraktConnectionResponse => ({
-  userId: connection.userId,
-  traktUserId: connection.traktUserId,
-  traktUsername: connection.username ?? null,
-  traktSlug: connection.slug ?? null,
-  displayName: connection.displayName ?? null,
-  status: connection.status,
-  connectedByUserId: connection.connectedByUserId ?? null,
-  lastValidatedAt: connection.lastValidatedAt?.toISOString() ?? null,
-  createdAt: connection.createdAt.toISOString(),
-  updatedAt: connection.updatedAt.toISOString(),
-});
 
 traktSettingsRoutes.get<unknown, TraktPublicSettings>('/', (_req, res) =>
   res.status(200).json(getSafeTraktSettings(getSettings().trakt))
@@ -107,5 +93,4 @@ traktSettingsRoutes.get<unknown, TraktConnectionResponse[]>(
   }
 );
 
-export { toConnectionResponse };
 export default traktSettingsRoutes;

@@ -11,8 +11,8 @@ import {
   isAllowedTraktOrigin,
   isTraktConfigured,
 } from '@server/lib/trakt/config';
+import { toConnectionResponse } from '@server/lib/trakt/connectionResponse';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
-import { toConnectionResponse } from '@server/routes/settings/trakt';
 import { Router, type RequestHandler } from 'express';
 
 const traktUserRoutes = Router({ mergeParams: true });
