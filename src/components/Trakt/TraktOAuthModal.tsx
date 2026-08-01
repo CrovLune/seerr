@@ -307,9 +307,8 @@ const TraktOAuthModal = ({
 
   return (
     <Transition
-      appear
-      show
       as="div"
+      show
       enter="transition-opacity duration-300"
       enterFrom="opacity-0"
       enterTo="opacity-100"

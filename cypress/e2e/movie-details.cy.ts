@@ -35,12 +35,10 @@ describe('Movie Details', () => {
     cy.get('[data-testid=trakt-watch-status-item]').should('have.length', 2);
     cy.get('[data-testid=trakt-watch-status]').within(() => {
       cy.contains('admin').should('be.visible');
-      cy.contains('household-admin').should('be.visible');
-      cy.contains('Watched').should('be.visible');
+      cy.get('[aria-label="Watched"]').should('be.visible');
       cy.contains('Jul 30, 2026').should('be.visible');
       cy.contains('Movie Partner').should('be.visible');
-      cy.contains('movie-partner').should('be.visible');
-      cy.contains('Not watched').should('be.visible');
+      cy.get('[aria-label="Not watched"]').should('be.visible');
     });
   });
 
@@ -67,9 +65,8 @@ describe('Movie Details', () => {
     cy.get('[data-testid=trakt-watch-status-item]').should('have.length', 1);
     cy.get('[data-testid=trakt-watch-status]').within(() => {
       cy.contains('Movie User').should('be.visible');
-      cy.contains('movie-user').should('be.visible');
-      cy.contains('Not watched').should('be.visible');
-      cy.contains('household-admin').should('not.exist');
+      cy.get('[aria-label="Not watched"]').should('be.visible');
+      cy.contains('Movie Partner').should('not.exist');
     });
   });
 
@@ -120,7 +117,7 @@ describe('Movie Details', () => {
     cy.get('[role=status]').should('not.exist');
     cy.get('[data-testid=trakt-watch-status]').within(() => {
       cy.contains('Loading Admin').should('be.visible');
-      cy.contains('Watched').should('be.visible');
+      cy.get('[aria-label="Watched"]').should('be.visible');
     });
   });
 

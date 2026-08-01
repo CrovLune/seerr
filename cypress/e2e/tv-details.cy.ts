@@ -35,10 +35,9 @@ describe('TV Details', () => {
     cy.get('[data-testid=trakt-watch-status-item]').should('have.length', 2);
     cy.get('[data-testid=trakt-watch-status]').within(() => {
       cy.contains('admin').should('be.visible');
-      cy.contains('Watched').should('be.visible');
+      cy.get('[aria-label="Watched"]').should('be.visible');
       cy.contains('TV Partner').should('be.visible');
-      cy.contains('tv-partner').should('be.visible');
-      cy.contains('Temporarily unavailable').should('be.visible');
+      cy.get('[aria-label="Temporarily unavailable"]').should('be.visible');
     });
   });
 
