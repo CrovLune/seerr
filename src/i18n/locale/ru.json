@@ -1437,7 +1437,7 @@
   "components.TvDetails.streamingproviders": "Сейчас транслируется",
   "components.TvDetails.tmdbuserscore": "Рейтинг пользователей TMDB",
   "components.TvDetails.traktWatched": "Просмотрено",
-  "components.TvDetails.traktWatchedBy": "Показать, кто посмотрел этот сезон",
+  "components.TvDetails.traktWatchedBy": "Просмотрели: {names}",
   "components.TvDetails.traktWatchedCount": "Просмотрено {watched}/{total}",
   "components.TvDetails.viewfullcrew": "Посмотреть полную cъёмочную группу",
   "components.TvDetails.watchlistDeleted": "<strong>{title}</strong> успешно удалён из списка просмотра!",
