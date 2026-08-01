@@ -2,6 +2,7 @@ import type { AxiosInstance, AxiosRequestConfig } from 'axios';
 import axios from 'axios';
 
 import { requireTraktCallbackUrl } from '@server/lib/trakt/config';
+import { proxyRequestInterceptor } from '@server/utils/customProxyAgent';
 
 const TRAKT_AUTH_URL = 'https://auth.trakt.tv';
 const TRAKT_API_URL = 'https://api.trakt.tv';
@@ -60,6 +61,32 @@ interface TraktHistoryEntry {
   watched_at?: string;
 }
 
+interface TraktShowProgressResponse {
+  seasons?: {
+    number?: number;
+    aired?: number;
+    completed?: number;
+    episodes?: {
+      number?: number;
+      completed?: boolean;
+    }[];
+  }[];
+}
+
+export interface TraktSeasonProgress {
+  seasonNumber: number;
+  airedEpisodes: number;
+  watchedEpisodes: number;
+  episodes: { episodeNumber: number; watched: boolean }[];
+}
+
+const createTraktHttp = (baseURL: string): AxiosInstance => {
+  const client = axios.create({ baseURL, timeout: REQUEST_TIMEOUT });
+  client.interceptors.request.use(proxyRequestInterceptor);
+
+  return client;
+};
+
 export default class TraktAPI {
   private accessTokenValidated = false;
 
@@ -67,14 +94,8 @@ export default class TraktAPI {
     private readonly clientId: string,
     private readonly clientSecret: string,
     private readonly accessToken?: string,
-    private readonly authHttp: AxiosInstance = axios.create({
-      baseURL: TRAKT_AUTH_URL,
-      timeout: REQUEST_TIMEOUT,
-    }),
-    private readonly apiHttp: AxiosInstance = axios.create({
-      baseURL: TRAKT_API_URL,
-      timeout: REQUEST_TIMEOUT,
-    })
+    private readonly authHttp: AxiosInstance = createTraktHttp(TRAKT_AUTH_URL),
+    private readonly apiHttp: AxiosInstance = createTraktHttp(TRAKT_API_URL)
   ) {}
 
   public buildAuthorizationUrl(state: string): string {
@@ -217,6 +238,52 @@ export default class TraktAPI {
     }
   }
 
+  /**
+   * Specials are requested because Seerr renders season 0 when enabled, but excluded from
+   * the overall counts so they cannot make a season look incomplete.
+   */
+  public async getShowProgress(
+    traktShowId: number,
+    signal?: AbortSignal
+  ): Promise<TraktSeasonProgress[]> {
+    try {
+      const response = await this.apiHttp.get<TraktShowProgressResponse>(
+        `/shows/${traktShowId}/progress/watched`,
+        this.apiRequestConfig({
+          params: { specials: true, count_specials: false },
+          signal,
+        })
+      );
+
+      const seasons = (response.data.seasons ?? []).flatMap((season) =>
+        typeof season.number === 'number'
+          ? [
+              {
+                seasonNumber: season.number,
+                airedEpisodes: season.aired ?? 0,
+                watchedEpisodes: season.completed ?? 0,
+                episodes: (season.episodes ?? []).flatMap((episode) =>
+                  typeof episode.number === 'number'
+                    ? [
+                        {
+                          episodeNumber: episode.number,
+                          watched: episode.completed === true,
+                        },
+                      ]
+                    : []
+                ),
+              },
+            ]
+          : []
+      );
+      this.accessTokenValidated = true;
+
+      return seasons;
+    } catch (error) {
+      throw this.toApiError(error);
+    }
+  }
+
   public didValidateAccessToken(): boolean {
     return this.accessTokenValidated;
   }
@@ -235,10 +302,8 @@ export default class TraktAPI {
   }
 
   /**
-   * Trakt users have no numeric id: `ids.trakt` is documented nullable and is absent in
-   * practice, and `ids.slug` follows username changes. Only the `uuid` from
-   * `/users/settings` is documented as globally unique and stable, so it is the identity
-   * a connection is keyed on.
+   * Keyed on `uuid` because Trakt users have no numeric `ids.trakt` and `ids.slug` follows
+   * username changes.
    */
   private getStableProfileId(settings: TraktSettingsResponse): string {
     const uuid = settings.user?.ids?.uuid;

@@ -1,4 +1,4 @@
-import TraktAPI from '@server/api/trakt';
+import TraktAPI, { type TraktSeasonProgress } from '@server/api/trakt';
 import { getRepository } from '@server/datasource';
 import {
   TraktConnection,
@@ -6,8 +6,11 @@ import {
 } from '@server/entity/TraktConnection';
 import type { User } from '@server/entity/User';
 import type {
+  TraktSeasonWatchStatusItem,
+  TraktSeasonWatchStatusResponse,
   TraktWatchStatusItem,
   TraktWatchStatusResponse,
+  TraktWatcher,
 } from '@server/interfaces/api/traktInterfaces';
 import cacheManager from '@server/lib/cache';
 import { Permission } from '@server/lib/permissions';
@@ -110,6 +113,157 @@ export class TraktWatchStatusService {
         )
     );
     return { ...response, items };
+  }
+
+  public async getSeasonWatchStatus(input: {
+    viewer: User;
+    tmdbId: number;
+  }): Promise<TraktSeasonWatchStatusResponse> {
+    const connections = await this.getVisibleConnections(input.viewer);
+    const response = {
+      tmdbId: input.tmdbId,
+      householdSize: connections.length,
+    };
+
+    if (connections.length === 0) {
+      return { ...response, status: 'ok', seasons: [] };
+    }
+
+    const mapping = await this.getMapping('tv', input.tmdbId);
+
+    if (mapping === 'temporarily_unavailable') {
+      return { ...response, status: 'temporarily_unavailable', seasons: [] };
+    }
+
+    if (mapping.kind === 'miss') {
+      return { ...response, status: 'ok', seasons: [] };
+    }
+
+    const progressByConnection = await mapWithConcurrency(
+      connections,
+      CONNECTION_CONCURRENCY,
+      async (connection) => ({
+        watcher: {
+          userId: connection.userId,
+          displayName: this.displayNameFor(connection),
+        },
+        // A single failing connection must not blank the whole household view.
+        progress: await this.getConnectionProgress(connection, mapping.traktId),
+      })
+    );
+
+    // With every lookup failed there is nothing to distinguish "nobody watched this" from
+    // "we could not ask", so report it as unavailable rather than as an empty result.
+    if (progressByConnection.every((entry) => entry.progress === null)) {
+      return { ...response, status: 'temporarily_unavailable', seasons: [] };
+    }
+
+    return {
+      ...response,
+      status: 'ok',
+      seasons: this.aggregateSeasons(progressByConnection),
+    };
+  }
+
+  private async getConnectionProgress(
+    connection: TraktConnection,
+    traktShowId: number
+  ): Promise<TraktSeasonProgress[] | null> {
+    const cache = cacheManager.getCache('trakt-watch-status').data;
+    const key = `connection:${connection.id}:version:${connection.tokenVersion}:progress:${traktShowId}`;
+    const cached = cache.get<TraktSeasonProgress[]>(key);
+
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const progress = await new TraktConnectionService().withAuthenticatedApi(
+        connection.userId,
+        (api) =>
+          api.getShowProgress(
+            traktShowId,
+            AbortSignal.timeout(this.lookupTimeoutMs)
+          )
+      );
+      cache.set(key, progress, WATCH_STATUS_TTL_SECONDS);
+
+      return progress;
+    } catch {
+      return null;
+    }
+  }
+
+  private aggregateSeasons(
+    entries: {
+      watcher: TraktWatcher;
+      progress: TraktSeasonProgress[] | null;
+    }[]
+  ): TraktSeasonWatchStatusItem[] {
+    // Members are cached independently, so one can still report the episode count from
+    // before a new episode aired. Completion is judged against the household's highest
+    // count, or a stale member would be credited with a season they have not finished.
+    const airedBySeason = new Map<number, number>();
+    for (const { progress } of entries) {
+      for (const season of progress ?? []) {
+        airedBySeason.set(
+          season.seasonNumber,
+          Math.max(
+            airedBySeason.get(season.seasonNumber) ?? 0,
+            season.airedEpisodes
+          )
+        );
+      }
+    }
+
+    const seasons = new Map<number, TraktSeasonWatchStatusItem>();
+
+    for (const { watcher, progress } of entries) {
+      for (const season of progress ?? []) {
+        const airedEpisodes =
+          airedBySeason.get(season.seasonNumber) ?? season.airedEpisodes;
+        let entry = seasons.get(season.seasonNumber);
+        if (!entry) {
+          entry = {
+            seasonNumber: season.seasonNumber,
+            airedEpisodes,
+            watchedBy: [],
+            episodes: [],
+          };
+          seasons.set(season.seasonNumber, entry);
+        }
+
+        if (airedEpisodes > 0 && season.watchedEpisodes >= airedEpisodes) {
+          entry.watchedBy.push(watcher);
+        }
+
+        for (const episode of season.episodes) {
+          if (!episode.watched) {
+            continue;
+          }
+          let episodeEntry = entry.episodes.find(
+            (candidate) => candidate.episodeNumber === episode.episodeNumber
+          );
+          if (!episodeEntry) {
+            episodeEntry = {
+              episodeNumber: episode.episodeNumber,
+              watchedBy: [],
+            };
+            entry.episodes.push(episodeEntry);
+          }
+          episodeEntry.watchedBy.push(watcher);
+        }
+      }
+    }
+
+    return [...seasons.values()]
+      .map((season) => ({
+        ...season,
+        episodes: season.episodes.sort(
+          (a, b) => a.episodeNumber - b.episodeNumber
+        ),
+      }))
+      .sort((a, b) => a.seasonNumber - b.seasonNumber);
   }
 
   private getVisibleConnections(viewer: User): Promise<TraktConnection[]> {
@@ -263,20 +417,25 @@ export class TraktWatchStatusService {
     }
   }
 
-  private toItem(
-    connection: TraktConnection,
-    status: Pick<TraktWatchStatusItem, 'watched' | 'watchedAt' | 'status'>
-  ): TraktWatchStatusItem {
+  private displayNameFor(connection: TraktConnection): string {
     const user = connection.user;
-    const displayName =
+
+    return (
       user.displayName ||
       user.username ||
       user.plexUsername ||
       user.jellyfinUsername ||
-      'Seerr user';
+      'Seerr user'
+    );
+  }
+
+  private toItem(
+    connection: TraktConnection,
+    status: Pick<TraktWatchStatusItem, 'watched' | 'watchedAt' | 'status'>
+  ): TraktWatchStatusItem {
     return {
       userId: connection.userId,
-      displayName,
+      displayName: this.displayNameFor(connection),
       traktUsername: connection.username ?? null,
       ...status,
     };

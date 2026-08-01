@@ -1,4 +1,7 @@
-import TraktAPI, { TraktApiError } from '@server/api/trakt';
+import TraktAPI, {
+  TraktApiError,
+  type TraktSeasonProgress,
+} from '@server/api/trakt';
 import { getRepository } from '@server/datasource';
 import {
   TraktConnection,
@@ -6,6 +9,7 @@ import {
 } from '@server/entity/TraktConnection';
 import { User } from '@server/entity/User';
 import cacheManager from '@server/lib/cache';
+import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
 import { setupTestDb } from '@server/test/db';
@@ -609,5 +613,298 @@ describe('TraktWatchStatusService', () => {
     assert.ok(visibleQuery);
     assert.equal(visibleQuery.includes('accessToken'), false);
     assert.equal(visibleQuery.includes('refreshToken'), false);
+  });
+});
+
+function mockShowProgress(
+  progressByUserId: Record<number, TraktSeasonProgress[] | Error>
+) {
+  mock.method(TraktAPI.prototype, 'findByTmdbId', async () => 700);
+  return mock.method(
+    TraktConnectionService.prototype,
+    'withAuthenticatedApi',
+    async (
+      userId: number,
+      operation: (authenticatedApi: TraktAPI) => Promise<unknown>
+    ) =>
+      operation({
+        getShowProgress: async () => {
+          const outcome = progressByUserId[userId];
+          if (outcome instanceof Error) {
+            throw outcome;
+          }
+          return outcome ?? [];
+        },
+      } as unknown as TraktAPI)
+  );
+}
+
+const season = (
+  seasonNumber: number,
+  airedEpisodes: number,
+  watchedEpisodeNumbers: number[],
+  overrides: Partial<TraktSeasonProgress> = {}
+): TraktSeasonProgress => ({
+  seasonNumber,
+  airedEpisodes,
+  watchedEpisodes: watchedEpisodeNumbers.length,
+  episodes: Array.from({ length: airedEpisodes }, (_, index) => ({
+    episodeNumber: index + 1,
+    watched: watchedEpisodeNumbers.includes(index + 1),
+  })),
+  ...overrides,
+});
+
+describe('TraktWatchStatusService season progress', () => {
+  it('counts only members who completed every aired episode', async () => {
+    const viewer = await admin();
+    const other = await friend();
+    await saveConnection(viewer);
+    await saveConnection(other);
+    viewer.permissions = Permission.ADMIN;
+    mockShowProgress({
+      [viewer.id]: [season(1, 3, [1, 2, 3])],
+      [other.id]: [season(1, 3, [1, 2])],
+    });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    assert.equal(result.householdSize, 2);
+    const first = result.seasons.find((s) => s.seasonNumber === 1);
+    assert.ok(first);
+    assert.deepEqual(
+      first.watchedBy.map((w) => w.userId),
+      [viewer.id],
+      'the partial watcher must not be counted as having watched the season'
+    );
+    assert.equal(first.airedEpisodes, 3);
+  });
+
+  it('attributes each episode to every member who watched it', async () => {
+    const viewer = await admin();
+    const other = await friend();
+    await saveConnection(viewer);
+    await saveConnection(other);
+    viewer.permissions = Permission.ADMIN;
+    mockShowProgress({
+      [viewer.id]: [season(1, 3, [1, 2, 3])],
+      [other.id]: [season(1, 3, [1, 3])],
+    });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    const first = result.seasons.find((s) => s.seasonNumber === 1);
+    assert.ok(first);
+    const byEpisode = new Map(
+      first.episodes.map((e) => [
+        e.episodeNumber,
+        e.watchedBy.map((w) => w.userId).sort(),
+      ])
+    );
+    assert.deepEqual(byEpisode.get(1), [viewer.id, other.id].sort());
+    assert.deepEqual(byEpisode.get(2), [viewer.id]);
+    assert.deepEqual(byEpisode.get(3), [viewer.id, other.id].sort());
+  });
+
+  it('omits unwatched episodes rather than listing them with no watchers', async () => {
+    const viewer = await admin();
+    await saveConnection(viewer);
+    mockShowProgress({ [viewer.id]: [season(1, 3, [2])] });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    const first = result.seasons.find((s) => s.seasonNumber === 1);
+    assert.ok(first);
+    assert.deepEqual(
+      first.episodes.map((e) => e.episodeNumber),
+      [2]
+    );
+    assert.deepEqual(first.watchedBy, []);
+  });
+
+  it('keeps the household view when one connection fails', async () => {
+    const viewer = await admin();
+    const other = await friend();
+    await saveConnection(viewer);
+    await saveConnection(other);
+    viewer.permissions = Permission.ADMIN;
+    mockShowProgress({
+      [viewer.id]: [season(1, 2, [1, 2])],
+      [other.id]: new TraktApiError('boom', 500, 'UPSTREAM'),
+    });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    assert.equal(result.status, 'ok');
+    assert.equal(
+      result.householdSize,
+      2,
+      'a failure must not shrink the household'
+    );
+    const first = result.seasons.find((s) => s.seasonNumber === 1);
+    assert.ok(first);
+    assert.deepEqual(
+      first.watchedBy.map((w) => w.userId),
+      [viewer.id]
+    );
+  });
+
+  it('treats a season with no aired episodes as unwatched', async () => {
+    const viewer = await admin();
+    await saveConnection(viewer);
+    mockShowProgress({ [viewer.id]: [season(0, 0, [])] });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    const specials = result.seasons.find((s) => s.seasonNumber === 0);
+    assert.ok(specials);
+    assert.deepEqual(
+      specials.watchedBy,
+      [],
+      '0 >= 0 must not count as a completed season'
+    );
+  });
+
+  it('returns seasons and episodes in ascending order', async () => {
+    const viewer = await admin();
+    await saveConnection(viewer);
+    mockShowProgress({
+      [viewer.id]: [
+        // Episodes are supplied out of order so removing the sort actually fails.
+        season(2, 2, [1, 2], {
+          episodes: [
+            { episodeNumber: 2, watched: true },
+            { episodeNumber: 1, watched: true },
+          ],
+        }),
+        season(1, 2, [1, 2]),
+      ],
+    });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    assert.deepEqual(
+      result.seasons.map((s) => s.seasonNumber),
+      [1, 2]
+    );
+    assert.deepEqual(
+      result.seasons[1].episodes.map((e) => e.episodeNumber),
+      [1, 2]
+    );
+  });
+
+  it('reports unavailable when the TMDB mapping cannot be resolved', async () => {
+    const viewer = await admin();
+    await saveConnection(viewer);
+    mock.method(TraktAPI.prototype, 'findByTmdbId', async () => {
+      throw new TraktApiError('down', 500, 'UPSTREAM');
+    });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    assert.equal(result.status, 'temporarily_unavailable');
+    assert.deepEqual(result.seasons, []);
+  });
+
+  it('returns an empty household when the viewer has no visible connections', async () => {
+    const viewer = await admin();
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    assert.equal(result.householdSize, 0);
+    assert.deepEqual(result.seasons, []);
+  });
+
+  it('never exposes tokens or emails in the response', async () => {
+    const viewer = await admin();
+    await saveConnection(viewer);
+    mockShowProgress({ [viewer.id]: [season(1, 1, [1])] });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    const serialized = JSON.stringify(result);
+    assert.equal(serialized.includes('secret-access-token'), false);
+    assert.equal(serialized.includes('secret-refresh-token'), false);
+    assert.equal(serialized.includes('@seerr.dev'), false);
+  });
+});
+
+describe('TraktWatchStatusService season progress consistency', () => {
+  it('judges completion against the household high-water episode count', async () => {
+    const viewer = await admin();
+    const other = await friend();
+    await saveConnection(viewer);
+    await saveConnection(other);
+    viewer.permissions = Permission.ADMIN;
+    // `viewer` still reports the pre-airing count of 2; `other` already sees 3.
+    mockShowProgress({
+      [viewer.id]: [season(1, 2, [1, 2])],
+      [other.id]: [season(1, 3, [1, 2, 3])],
+    });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    const first = result.seasons.find((s) => s.seasonNumber === 1);
+    assert.ok(first);
+    assert.equal(first.airedEpisodes, 3);
+    assert.deepEqual(
+      first.watchedBy.map((w) => w.userId),
+      [other.id],
+      'a stale 2/2 must not count as completing a 3-episode season'
+    );
+  });
+
+  it('reports unavailable rather than empty when every lookup fails', async () => {
+    const viewer = await admin();
+    const other = await friend();
+    await saveConnection(viewer);
+    await saveConnection(other);
+    viewer.permissions = Permission.ADMIN;
+    mockShowProgress({
+      [viewer.id]: new TraktApiError('boom', 500, 'UPSTREAM'),
+      [other.id]: new TraktApiError('boom', 500, 'UPSTREAM'),
+    });
+
+    const result = await new TraktWatchStatusService().getSeasonWatchStatus({
+      viewer,
+      tmdbId: 275188,
+    });
+
+    assert.equal(
+      result.status,
+      'temporarily_unavailable',
+      'all-failed must be distinguishable from nobody-watched'
+    );
+    assert.deepEqual(result.seasons, []);
   });
 });

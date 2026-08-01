@@ -75,3 +75,28 @@ export interface TraktWatchStatusResponse {
   tmdbId: number;
   items: TraktWatchStatusItem[];
 }
+
+export interface TraktWatcher {
+  userId: number;
+  displayName: string;
+}
+
+export interface TraktEpisodeWatchStatusItem {
+  episodeNumber: number;
+  watchedBy: TraktWatcher[];
+}
+
+export interface TraktSeasonWatchStatusItem {
+  seasonNumber: number;
+  airedEpisodes: number;
+  /** Household members who have completed every aired episode of the season. */
+  watchedBy: TraktWatcher[];
+  episodes: TraktEpisodeWatchStatusItem[];
+}
+
+export interface TraktSeasonWatchStatusResponse {
+  tmdbId: number;
+  status: 'ok' | 'temporarily_unavailable';
+  householdSize: number;
+  seasons: TraktSeasonWatchStatusItem[];
+}

@@ -62,6 +62,7 @@ components:
         callbackUrl:
           type: string
           format: uri
+          nullable: true
     TraktSettingsUpdate:
       type: object
       required:
@@ -201,6 +202,74 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TraktWatchStatusItem'
+    TraktSeasonWatchStatus:
+      type: object
+      required:
+        - tmdbId
+        - status
+        - householdSize
+        - seasons
+      properties:
+        tmdbId:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - ok
+            - temporarily_unavailable
+        householdSize:
+          type: integer
+          minimum: 0
+        seasons:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraktSeasonWatchStatusItem'
+    TraktWatcher:
+      type: object
+      required:
+        - userId
+        - displayName
+      properties:
+        userId:
+          type: integer
+        displayName:
+          type: string
+    TraktEpisodeWatchStatusItem:
+      type: object
+      required:
+        - episodeNumber
+        - watchedBy
+      properties:
+        episodeNumber:
+          type: integer
+          minimum: 0
+        watchedBy:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraktWatcher'
+    TraktSeasonWatchStatusItem:
+      type: object
+      required:
+        - seasonNumber
+        - airedEpisodes
+        - watchedBy
+        - episodes
+      properties:
+        seasonNumber:
+          type: integer
+          minimum: 0
+        airedEpisodes:
+          type: integer
+          minimum: 0
+        watchedBy:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraktWatcher'
+        episodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraktEpisodeWatchStatusItem'
     TraktWatchStatusItem:
       type: object
       required:
@@ -2603,6 +2672,29 @@ paths:
           description: Invalid media type or TMDB ID
         '401':
           description: Authentication required
+  /trakt/watchstatus/tv/{tmdbId}/seasons:
+    get:
+      summary: Get the requesting user's Trakt watched progress per season
+      tags:
+        - users
+      parameters:
+        - in: path
+          name: tmdbId
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Per-season watched progress for the requesting user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraktSeasonWatchStatus'
+        '400':
+          description: Invalid TMDB ID
+        '401':
+          description: Authentication required
   /auth/trakt/callback:
     get:
       summary: Complete a Trakt OAuth redirect
@@ -2628,6 +2720,14 @@ paths:
         - in: query
           name: error_description
           required: false
+          schema:
+            type: string
+        - in: query
+          name: iss
+          required: false
+          description: >-
+            Issuer identifier returned by Trakt (RFC 9207). Accepted and ignored;
+            the transaction is identified by `state`.
           schema:
             type: string
       responses:
