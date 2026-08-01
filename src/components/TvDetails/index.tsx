@@ -57,6 +57,7 @@ import {
   MediaType,
 } from '@server/constants/media';
 import { MediaServerType } from '@server/constants/server';
+import type { TraktSeasonWatchStatusResponse } from '@server/interfaces/api/traktInterfaces';
 import type { TvDetails as TvDetailsType } from '@server/models/Tv';
 import type { Crew } from '@server/models/common';
 import axios from 'axios';
@@ -94,6 +95,7 @@ const messages = defineMessages('components.TvDetails', {
   reportissue: 'Report an Issue',
   manageseries: 'Manage Series',
   seasonstitle: 'Seasons',
+  traktWatched: 'Watched {watched}/{total}',
   episodeCount: '{episodeCount, plural, one {# Episode} other {# Episodes}}',
   seasonnumber: 'Season {seasonNumber}',
   status4k: '4K {status}',
@@ -147,6 +149,23 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
 
   const { data: ratingData } = useSWR<RTRating>(
     `/api/v1/tv/${router.query.tvId}/ratings`
+  );
+
+  const { data: traktSeasonStatus } = useSWR<TraktSeasonWatchStatusResponse>(
+    user ? `/api/v1/trakt/watchstatus/tv/${router.query.tvId}/seasons` : null
+  );
+
+  const traktHouseholdSize = traktSeasonStatus?.householdSize ?? 0;
+
+  const traktSeasonsByNumber = useMemo(
+    () =>
+      new Map(
+        (traktSeasonStatus?.seasons ?? []).map((season) => [
+          season.seasonNumber,
+          season,
+        ])
+      ),
+    [traktSeasonStatus]
   );
 
   const sortedCrew = useMemo(
@@ -851,6 +870,11 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
                   return null;
                 }
 
+                const traktSeason = traktSeasonsByNumber.get(
+                  season.seasonNumber
+                );
+                const traktWatchers = traktSeason?.watchedBy ?? [];
+
                 return (
                   <Disclosure key={`season-discoslure-${season.seasonNumber}`}>
                     {({ open }) => (
@@ -876,38 +900,68 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
                               })}
                             </Badge>
                           </div>
-                          {((!mSeason &&
-                            request?.status === MediaRequestStatus.APPROVED) ||
-                            mSeason?.status === MediaStatus.PROCESSING ||
-                            (request?.status === MediaRequestStatus.APPROVED &&
-                              mSeason?.status === MediaStatus.DELETED)) && (
-                            <>
-                              <div className="hidden md:flex">
-                                <Badge badgeType="primary">
-                                  {intl.formatMessage(globalMessages.requested)}
+                          {traktWatchers.length > 0 && (
+                            <Tooltip
+                              content={
+                                <ul>
+                                  {traktWatchers.map((watcher) => (
+                                    <li key={watcher.userId}>
+                                      {watcher.displayName}
+                                    </li>
+                                  ))}
+                                </ul>
+                              }
+                            >
+                              <div className="flex">
+                                <Badge badgeType="success">
+                                  {intl.formatMessage(messages.traktWatched, {
+                                    watched: traktWatchers.length,
+                                    total: traktHouseholdSize,
+                                  })}
                                 </Badge>
                               </div>
-                              <div className="flex md:hidden">
-                                <StatusBadgeMini
-                                  status={MediaStatus.PROCESSING}
-                                />
-                              </div>
-                            </>
+                            </Tooltip>
                           )}
-                          {((!mSeason &&
-                            request?.status === MediaRequestStatus.PENDING) ||
-                            mSeason?.status === MediaStatus.PENDING) && (
-                            <>
-                              <div className="hidden md:flex">
-                                <Badge badgeType="warning">
-                                  {intl.formatMessage(globalMessages.pending)}
-                                </Badge>
-                              </div>
-                              <div className="flex md:hidden">
-                                <StatusBadgeMini status={MediaStatus.PENDING} />
-                              </div>
-                            </>
-                          )}
+                          {traktWatchers.length === 0 &&
+                            ((!mSeason &&
+                              request?.status ===
+                                MediaRequestStatus.APPROVED) ||
+                              mSeason?.status === MediaStatus.PROCESSING ||
+                              (request?.status ===
+                                MediaRequestStatus.APPROVED &&
+                                mSeason?.status === MediaStatus.DELETED)) && (
+                              <>
+                                <div className="hidden md:flex">
+                                  <Badge badgeType="primary">
+                                    {intl.formatMessage(
+                                      globalMessages.requested
+                                    )}
+                                  </Badge>
+                                </div>
+                                <div className="flex md:hidden">
+                                  <StatusBadgeMini
+                                    status={MediaStatus.PROCESSING}
+                                  />
+                                </div>
+                              </>
+                            )}
+                          {traktWatchers.length === 0 &&
+                            ((!mSeason &&
+                              request?.status === MediaRequestStatus.PENDING) ||
+                              mSeason?.status === MediaStatus.PENDING) && (
+                              <>
+                                <div className="hidden md:flex">
+                                  <Badge badgeType="warning">
+                                    {intl.formatMessage(globalMessages.pending)}
+                                  </Badge>
+                                </div>
+                                <div className="flex md:hidden">
+                                  <StatusBadgeMini
+                                    status={MediaStatus.PENDING}
+                                  />
+                                </div>
+                              </>
+                            )}
                           {mSeason?.status ===
                             MediaStatus.PARTIALLY_AVAILABLE && (
                             <>
@@ -1085,6 +1139,7 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
                             <Season
                               tvId={data.id}
                               seasonNumber={season.seasonNumber}
+                              traktEpisodes={traktSeason?.episodes}
                             />
                           </Disclosure.Panel>
                         </Transition>

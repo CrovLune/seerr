@@ -1,5 +1,10 @@
 import { useUser } from '@app/hooks/useUser';
 import defineMessages from '@app/utils/defineMessages';
+import {
+  CheckCircleIcon,
+  ExclamationCircleIcon,
+  XCircleIcon,
+} from '@heroicons/react/24/solid';
 import type { TraktWatchStatusResponse } from '@server/interfaces/api/traktInterfaces';
 import { useIntl } from 'react-intl';
 import useSWR from 'swr';
@@ -51,38 +56,38 @@ const TraktWatchStatus = ({ mediaType, tmdbId }: TraktWatchStatusProps) => {
       <div className="media-fact-value flex w-full flex-col gap-2">
         {data.items.map((item) => (
           <div
-            className="flex w-full items-start justify-between gap-3"
+            className="flex w-full items-center justify-between gap-3"
             data-testid="trakt-watch-status-item"
             key={item.userId}
           >
-            <span className="min-w-0">
-              <span className="block truncate">{item.displayName}</span>
-              {item.traktUsername ? (
-                <span className="block truncate text-xs text-gray-400">
-                  @{item.traktUsername}
+            <span className="min-w-0 truncate">{item.displayName}</span>
+            <span className="flex shrink-0 items-center gap-2">
+              {item.watchedAt && item.status !== 'temporarily_unavailable' ? (
+                <span className="text-xs text-gray-400">
+                  {intl.formatDate(item.watchedAt, {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                  })}
                 </span>
               ) : null}
-            </span>
-            <span className="shrink-0 text-right">
               {item.status === 'temporarily_unavailable' ? (
-                intl.formatMessage(messages.temporarilyUnavailable)
+                <ExclamationCircleIcon
+                  className="h-5 w-5 text-yellow-500"
+                  aria-label={intl.formatMessage(
+                    messages.temporarilyUnavailable
+                  )}
+                />
               ) : item.watched ? (
-                <>
-                  <span className="block">
-                    {intl.formatMessage(messages.watched)}
-                  </span>
-                  {item.watchedAt ? (
-                    <span className="block text-xs text-gray-400">
-                      {intl.formatDate(item.watchedAt, {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                      })}
-                    </span>
-                  ) : null}
-                </>
+                <CheckCircleIcon
+                  className="h-5 w-5 text-green-500"
+                  aria-label={intl.formatMessage(messages.watched)}
+                />
               ) : (
-                intl.formatMessage(messages.notWatched)
+                <XCircleIcon
+                  className="h-5 w-5 text-gray-500"
+                  aria-label={intl.formatMessage(messages.notWatched)}
+                />
               )}
             </span>
           </div>
