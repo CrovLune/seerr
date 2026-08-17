@@ -31,20 +31,22 @@ services:
       traefik.http.routers.seerr-trakt-callback.entrypoints: 'https'
       traefik.http.routers.seerr-trakt-callback.priority: '300'
       traefik.http.routers.seerr-trakt-callback.service: 'seerr'
-      traefik.http.routers.seerr-lan-redirect.rule: 'Host(`overseerr.pixeltrophies.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`2a02:578:855b:1700::/64`))'
-      traefik.http.routers.seerr-lan-redirect.entrypoints: 'https'
-      traefik.http.routers.seerr-lan-redirect.priority: '200'
-      traefik.http.routers.seerr-lan-redirect.middlewares: 'redirect-to-local@file'
-      traefik.http.routers.seerr-lan-redirect.service: 'seerr'
+      # LAN redirect and the .local host are disabled together: the redirect is
+      # permanent, so it must not point at a hostname with no route.
+      # traefik.http.routers.seerr-lan-redirect.rule: 'Host(`overseerr.pixeltrophies.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`2a02:578:855b:1700::/64`))'
+      # traefik.http.routers.seerr-lan-redirect.entrypoints: 'https'
+      # traefik.http.routers.seerr-lan-redirect.priority: '200'
+      # traefik.http.routers.seerr-lan-redirect.middlewares: 'redirect-to-local@file'
+      # traefik.http.routers.seerr-lan-redirect.service: 'seerr'
       traefik.http.routers.seerr-public.rule: 'Host(`overseerr.pixeltrophies.com`)'
       traefik.http.routers.seerr-public.entrypoints: 'https'
       traefik.http.routers.seerr-public.priority: '100'
       traefik.http.routers.seerr-public.service: 'seerr'
-      traefik.http.routers.seerr-local.rule: 'Host(`overseerr.local.pixeltrophies.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`2a02:578:855b:1700::/64`))'
-      traefik.http.routers.seerr-local.entrypoints: 'https'
-      traefik.http.routers.seerr-local.priority: '200'
-      traefik.http.routers.seerr-local.middlewares: 'ip-whitelist@file'
-      traefik.http.routers.seerr-local.service: 'seerr'
+      # traefik.http.routers.seerr-local.rule: 'Host(`overseerr.local.pixeltrophies.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`2a02:578:855b:1700::/64`))'
+      # traefik.http.routers.seerr-local.entrypoints: 'https'
+      # traefik.http.routers.seerr-local.priority: '200'
+      # traefik.http.routers.seerr-local.middlewares: 'ip-whitelist@file'
+      # traefik.http.routers.seerr-local.service: 'seerr'
 
 networks:
   traefik:
