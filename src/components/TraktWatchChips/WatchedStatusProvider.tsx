@@ -9,6 +9,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -36,6 +37,8 @@ export const TraktWatchedStatusProvider = ({
   const [results, setResults] = useState<Map<string, TraktCardWatchStatusItem>>(
     new Map()
   );
+  // Mirrors `results` so `register`'s identity doesn't churn on every chunk resolution.
+  const resultsRef = useRef(results);
   const pending = useRef(new Set<string>());
   const timer: MutableRefObject<ReturnType<typeof setTimeout> | undefined> =
     useRef(undefined);
@@ -62,6 +65,7 @@ export const TraktWatchedStatusProvider = ({
           for (const result of data.results) {
             next.set(`${result.mediaType}:${result.tmdbId}`, result);
           }
+          resultsRef.current = next;
           return next;
         });
       } catch {
@@ -74,16 +78,18 @@ export const TraktWatchedStatusProvider = ({
     (mediaType: string, tmdbId: number) => {
       if (mediaType !== 'movie' && mediaType !== 'tv') return;
       const key = `${mediaType}:${tmdbId}`;
-      if (results.has(key) || pending.current.has(key)) return;
+      if (resultsRef.current.has(key) || pending.current.has(key)) return;
       pending.current.add(key);
       clearTimeout(timer.current);
       timer.current = setTimeout(flush, DEBOUNCE_MS);
     },
-    [flush, results]
+    [flush]
   );
 
+  const value = useMemo(() => ({ register, results }), [register, results]);
+
   return (
-    <TraktWatchedStatusContext.Provider value={{ register, results }}>
+    <TraktWatchedStatusContext.Provider value={value}>
       {children}
     </TraktWatchedStatusContext.Provider>
   );
