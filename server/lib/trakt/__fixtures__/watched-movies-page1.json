@@ -1,0 +1,72 @@
+[
+  {
+    "plays": 1,
+    "last_watched_at": "2026-08-26T20:12:00.000Z",
+    "movie": {
+      "title": "The Tale of Tsar Saltan",
+      "year": 2026,
+      "ids": {
+        "imdb": "tt29952017",
+        "slug": "the-tale-of-tsar-saltan-2026",
+        "tmdb": 1265316,
+        "trakt": 1026977
+      }
+    }
+  },
+  {
+    "plays": 1,
+    "last_watched_at": "2026-08-25T16:41:00.000Z",
+    "movie": {
+      "title": "Asterix the Gaul",
+      "year": 1967,
+      "ids": {
+        "imdb": "tt0061369",
+        "slug": "asterix-the-gaul-1967",
+        "tmdb": 11047,
+        "trakt": 6184
+      }
+    }
+  },
+  {
+    "plays": 1,
+    "last_watched_at": "2026-08-24T19:02:00.000Z",
+    "movie": {
+      "title": "Good Luck, Have Fun, Don't Die",
+      "year": 2026,
+      "ids": {
+        "imdb": "tt1341338",
+        "slug": "good-luck-have-fun-don-t-die-2026",
+        "tmdb": 1119449,
+        "trakt": 900786
+      }
+    }
+  },
+  {
+    "plays": 1,
+    "last_watched_at": "2026-08-22T21:18:00.000Z",
+    "movie": {
+      "title": "Spider-Man: Brand New Day",
+      "year": 2026,
+      "ids": {
+        "imdb": "tt22084616",
+        "slug": "spider-man-brand-new-day-2026",
+        "tmdb": 969681,
+        "trakt": 905132
+      }
+    }
+  },
+  {
+    "plays": 3,
+    "last_watched_at": "2026-08-13T20:50:00.000Z",
+    "movie": {
+      "title": "Asterix and Obelix Take On Caesar",
+      "year": 1999,
+      "ids": {
+        "imdb": "tt0133385",
+        "slug": "asterix-and-obelix-take-on-caesar-1999",
+        "tmdb": 9564,
+        "trakt": 4842
+      }
+    }
+  }
+]
