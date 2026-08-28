@@ -437,7 +437,14 @@ export default class TraktAPI {
       );
       items.push(...(response.data ?? []));
       const header = Number(response.headers?.['x-pagination-page-count']);
-      pageCount = Number.isFinite(header) && header > 0 ? header : 1;
+      if (!Number.isFinite(header) || header < 1) {
+        throw new TraktApiError(
+          'Trakt watched library page count is unreadable',
+          0,
+          'PAGE_COUNT_MISSING'
+        );
+      }
+      pageCount = header;
 
       if (pageCount > MAX_WATCHED_PAGES) {
         throw new TraktApiError(

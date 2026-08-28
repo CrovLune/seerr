@@ -41,6 +41,11 @@ export const deriveState = (
   if (row.mediaType === 'movie') {
     return 'complete';
   }
+  // Takes precedence over the aired === 0 -> 'partial' case below: a reset show can have
+  // airedEpisodes > 0 and zero current progress, which must read as not started, not partial.
+  if (row.watchedEpisodes <= 0) {
+    return 'not_started';
+  }
   const aired = row.airedEpisodes ?? 0;
   if (aired > 0 && row.watchedEpisodes === aired) {
     return 'complete';

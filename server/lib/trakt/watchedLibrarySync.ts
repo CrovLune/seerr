@@ -19,6 +19,22 @@ const toDate = (value: string | null): Date | null =>
   value ? new Date(value) : null;
 
 /**
+ * Deduplicates by `${mediaType}:${tmdbId}` because the repository's upsert issues one
+ * multi-row statement per chunk, and two rows sharing a conflict key in the same statement
+ * abort the transaction on PostgreSQL. The higher watched count wins on collision.
+ */
+const upsertByKey = (
+  items: Map<string, WatchedSnapshotItem>,
+  item: WatchedSnapshotItem
+): void => {
+  const key = `${item.mediaType}:${item.tmdbId}`;
+  const current = items.get(key);
+  if (!current || item.watchedEpisodes > current.watchedEpisodes) {
+    items.set(key, item);
+  }
+};
+
+/**
  * Translates Trakt's watched-library payload into the shape the repository persists. Counts
  * distinct episodes rather than summing `plays`, since rewatches would otherwise inflate a show
  * past its aired count and falsely read as complete.
@@ -27,13 +43,13 @@ export const buildWatchedSnapshot = (
   movies: TraktWatchedMovie[],
   shows: TraktWatchedShow[]
 ): WatchedSnapshotItem[] => {
-  const items: WatchedSnapshotItem[] = [];
+  const items = new Map<string, WatchedSnapshotItem>();
 
   for (const movie of movies) {
     if (movie.tmdbId === null) {
       throw new IncompleteSnapshotError('Watched movie is missing a TMDB id');
     }
-    items.push({
+    upsertByKey(items, {
       mediaType: 'movie',
       tmdbId: movie.tmdbId,
       watchedEpisodes: 1,
@@ -64,7 +80,7 @@ export const buildWatchedSnapshot = (
       }
     }
 
-    items.push({
+    upsertByKey(items, {
       mediaType: 'tv',
       tmdbId: show.tmdbId,
       watchedEpisodes: counted.size,
@@ -73,5 +89,5 @@ export const buildWatchedSnapshot = (
     });
   }
 
-  return items;
+  return [...items.values()];
 };

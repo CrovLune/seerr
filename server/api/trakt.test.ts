@@ -514,4 +514,32 @@ describe('TraktAPI watched library pagination', () => {
     assert.equal(get.mock.calls.length, 100);
     assert.equal(result.length, 100);
   });
+
+  const missingPageCountCases: [string, Record<string, string>][] = [
+    ['missing', {}],
+    ['empty', { 'x-pagination-page-count': '' }],
+    ['non-numeric', { 'x-pagination-page-count': 'not-a-number' }],
+  ];
+
+  for (const [label, headers] of missingPageCountCases) {
+    it(`rejects without partial data when the page count header is ${label}`, async () => {
+      const get = mock.fn<WatchedLibraryGet>(async () => ({
+        data: [{ movie: { ids: { tmdb: 1 } } }],
+        headers,
+      }));
+      const api = traktApiWithGet(get);
+
+      // Defeasibility: a `pageCount = 1` fallback for this header would make this resolve
+      // with the single fetched movie instead of rejecting.
+      await assert.rejects(
+        () => api.getWatchedMovies(),
+        (error: unknown) => {
+          assert.ok(error instanceof TraktApiError);
+          assert.equal((error as TraktApiError).code, 'PAGE_COUNT_MISSING');
+          return true;
+        }
+      );
+      assert.equal(get.mock.calls.length, 1);
+    });
+  }
 });

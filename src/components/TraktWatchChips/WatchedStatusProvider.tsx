@@ -1,3 +1,4 @@
+import { useUser } from '@app/hooks/useUser';
 import type {
   TraktCardWatchStatusItem,
   TraktCardWatchStatusResponse,
@@ -34,6 +35,7 @@ export const TraktWatchedStatusProvider = ({
 }: {
   children: ReactNode;
 }) => {
+  const { user } = useUser();
   const [results, setResults] = useState<Map<string, TraktCardWatchStatusItem>>(
     new Map()
   );
@@ -42,8 +44,24 @@ export const TraktWatchedStatusProvider = ({
   const pending = useRef(new Set<string>());
   const timer: MutableRefObject<ReturnType<typeof setTimeout> | undefined> =
     useRef(undefined);
+  const viewerId = useRef(user?.id);
+  // Bumped on every viewer switch so a response for a since-abandoned viewer is dropped
+  // instead of being merged into the next viewer's cache.
+  const generation = useRef(0);
+
+  useEffect(() => {
+    if (viewerId.current === user?.id) return;
+    viewerId.current = user?.id;
+    generation.current += 1;
+    clearTimeout(timer.current);
+    timer.current = undefined;
+    pending.current.clear();
+    resultsRef.current = new Map();
+    setResults(new Map());
+  }, [user?.id]);
 
   const flush = useCallback(async () => {
+    const generationAtFlush = generation.current;
     const keys = [...pending.current];
     pending.current.clear();
     if (keys.length === 0) return;
@@ -60,6 +78,7 @@ export const TraktWatchedStatusProvider = ({
           '/api/v1/trakt/watchstatus/batch',
           { items: chunk }
         );
+        if (generation.current !== generationAtFlush) continue;
         setResults((prev) => {
           const next = new Map(prev);
           for (const result of data.results) {

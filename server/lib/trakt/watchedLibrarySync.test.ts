@@ -133,6 +133,31 @@ describe('buildWatchedSnapshot', () => {
     assert.deepEqual(item!.lastWatchedAt, new Date('2026-05-05T00:00:00.000Z'));
   });
 
+  it('collapses two shows sharing a TMDB id into one row, keeping the higher watched count', () => {
+    const snapshot = buildWatchedSnapshot(
+      [],
+      [
+        show({ tmdbId: 99, episodes: [ep(1, 1)] }),
+        show({ tmdbId: 99, episodes: [ep(1, 1), ep(1, 2), ep(1, 3)] }),
+      ]
+    );
+
+    assert.equal(snapshot.length, 1);
+    assert.equal(snapshot[0]!.watchedEpisodes, 3);
+  });
+
+  it('collapses two movies sharing a TMDB id into one row', () => {
+    const snapshot = buildWatchedSnapshot(
+      [
+        { tmdbId: 42, lastWatchedAt: '2026-01-01T00:00:00.000Z' },
+        { tmdbId: 42, lastWatchedAt: '2026-02-02T00:00:00.000Z' },
+      ],
+      []
+    );
+
+    assert.equal(snapshot.length, 1);
+  });
+
   it('parses the captured live response without losing items', async () => {
     const raw = JSON.parse(
       readFileSync(

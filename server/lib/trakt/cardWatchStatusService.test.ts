@@ -89,6 +89,20 @@ describe('deriveState', () => {
       'partial'
     );
   });
+
+  it('returns not_started, not partial, when watchedEpisodes is zero and aired is also zero', () => {
+    assert.equal(
+      deriveState({ mediaType: 'tv', watchedEpisodes: 0, airedEpisodes: 0 }),
+      'not_started'
+    );
+  });
+
+  it('returns not_started, not partial, when a reset show has zero current episodes but a nonzero aired count', () => {
+    assert.equal(
+      deriveState({ mediaType: 'tv', watchedEpisodes: 0, airedEpisodes: 10 }),
+      'not_started'
+    );
+  });
 });
 
 describe('traktCardWatchStatusService.getBatch', () => {
