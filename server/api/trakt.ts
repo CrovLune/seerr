@@ -9,6 +9,9 @@ const TRAKT_API_URL = 'https://api.trakt.tv';
 const REQUEST_TIMEOUT = 10_000;
 const WATCHED_MOVIE_PAGE_LIMIT = 250;
 const WATCHED_SHOW_PAGE_LIMIT = 100;
+// ~25k movies at the movie page limit; a reported count beyond this is untrustworthy, so
+// pagination rejects rather than looping through it.
+const MAX_WATCHED_PAGES = 100;
 
 export interface TraktTokenSet {
   accessToken: string;
@@ -435,6 +438,15 @@ export default class TraktAPI {
       items.push(...(response.data ?? []));
       const header = Number(response.headers?.['x-pagination-page-count']);
       pageCount = Number.isFinite(header) && header > 0 ? header : 1;
+
+      if (pageCount > MAX_WATCHED_PAGES) {
+        throw new TraktApiError(
+          'Trakt watched library page count exceeds the safety bound',
+          0,
+          'PAGE_COUNT_EXCEEDED'
+        );
+      }
+
       page += 1;
     } while (page <= pageCount);
 

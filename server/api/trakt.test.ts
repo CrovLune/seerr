@@ -490,4 +490,28 @@ describe('TraktAPI watched library pagination', () => {
     assert.equal(result[0]!.airedEpisodes, 10);
     assert.equal(result[0]!.episodes[0]!.plays, 2);
   });
+
+  it('rejects without partial data and stops at the first page when the reported page count exceeds the safety bound', async () => {
+    const get = mock.fn<WatchedLibraryGet>(async () => ({
+      data: [{ movie: { ids: { tmdb: 1 } } }],
+      headers: { 'x-pagination-page-count': '101' },
+    }));
+    const api = traktApiWithGet(get);
+
+    await assert.rejects(() => api.getWatchedMovies());
+    assert.equal(get.mock.calls.length, 1);
+  });
+
+  it('still succeeds when the reported page count is exactly at the safety bound', async () => {
+    const get = mock.fn<WatchedLibraryGet>(async () => ({
+      data: [{ movie: { ids: { tmdb: 1 } } }],
+      headers: { 'x-pagination-page-count': '100' },
+    }));
+    const api = traktApiWithGet(get);
+
+    const result = await api.getWatchedMovies();
+
+    assert.equal(get.mock.calls.length, 100);
+    assert.equal(result.length, 100);
+  });
 });
