@@ -7,6 +7,8 @@ import { proxyRequestInterceptor } from '@server/utils/customProxyAgent';
 const TRAKT_AUTH_URL = 'https://auth.trakt.tv';
 const TRAKT_API_URL = 'https://api.trakt.tv';
 const REQUEST_TIMEOUT = 10_000;
+const WATCHED_MOVIE_PAGE_LIMIT = 250;
+const WATCHED_SHOW_PAGE_LIMIT = 100;
 
 export interface TraktTokenSet {
   accessToken: string;
@@ -80,6 +82,41 @@ export interface TraktSeasonProgress {
   airedEpisodes: number;
   watchedEpisodes: number;
   episodes: { episodeNumber: number; watched: boolean }[];
+}
+
+interface RawWatchedMovie {
+  movie?: { ids?: { tmdb?: number | null } };
+  last_watched_at?: string | null;
+}
+
+interface RawWatchedShow {
+  show?: { ids?: { tmdb?: number | null }; aired_episodes?: number };
+  reset_at?: string | null;
+  seasons?: {
+    number: number;
+    episodes?: {
+      number: number;
+      plays?: number;
+      last_watched_at?: string | null;
+    }[];
+  }[];
+}
+
+export interface TraktWatchedMovie {
+  tmdbId: number | null;
+  lastWatchedAt: string | null;
+}
+
+export interface TraktWatchedShow {
+  tmdbId: number | null;
+  airedEpisodes: number;
+  resetAt: string | null;
+  episodes: {
+    season: number;
+    episode: number;
+    plays: number;
+    lastWatchedAt: string | null;
+  }[];
 }
 
 const createTraktHttp = (baseURL: string): AxiosInstance => {
@@ -286,6 +323,65 @@ export default class TraktAPI {
     }
   }
 
+  /**
+   * A later stage deletes any row absent from the returned list, so a partial result from a
+   * failed page would look like the user un-watched everything past that point.
+   */
+  public async getWatchedMovies(
+    signal?: AbortSignal
+  ): Promise<TraktWatchedMovie[]> {
+    try {
+      const raw = await this.fetchAllPages<RawWatchedMovie>(
+        '/sync/watched/movies',
+        {},
+        WATCHED_MOVIE_PAGE_LIMIT,
+        signal
+      );
+      this.accessTokenValidated = true;
+
+      return raw.map((entry) => ({
+        tmdbId: entry.movie?.ids?.tmdb ?? null,
+        lastWatchedAt: entry.last_watched_at ?? null,
+      }));
+    } catch (error) {
+      throw this.toApiError(error);
+    }
+  }
+
+  /**
+   * `extended=progress` is what surfaces per-episode watch state; Trakt caps it at 100 items
+   * per page regardless of the requested limit.
+   */
+  public async getWatchedShows(
+    signal?: AbortSignal
+  ): Promise<TraktWatchedShow[]> {
+    try {
+      const raw = await this.fetchAllPages<RawWatchedShow>(
+        '/sync/watched/shows',
+        { extended: 'progress' },
+        WATCHED_SHOW_PAGE_LIMIT,
+        signal
+      );
+      this.accessTokenValidated = true;
+
+      return raw.map((entry) => ({
+        tmdbId: entry.show?.ids?.tmdb ?? null,
+        airedEpisodes: entry.show?.aired_episodes ?? 0,
+        resetAt: entry.reset_at ?? null,
+        episodes: (entry.seasons ?? []).flatMap((season) =>
+          (season.episodes ?? []).map((episode) => ({
+            season: season.number,
+            episode: episode.number,
+            plays: episode.plays ?? 0,
+            lastWatchedAt: episode.last_watched_at ?? null,
+          }))
+        ),
+      }));
+    } catch (error) {
+      throw this.toApiError(error);
+    }
+  }
+
   public didValidateAccessToken(): boolean {
     return this.accessTokenValidated;
   }
@@ -319,6 +415,30 @@ export default class TraktAPI {
     }
 
     return uuid;
+  }
+
+  private async fetchAllPages<TRaw>(
+    path: string,
+    params: Record<string, string | number>,
+    limit: number,
+    signal?: AbortSignal
+  ): Promise<TRaw[]> {
+    const items: TRaw[] = [];
+    let page = 1;
+    let pageCount = 1;
+
+    do {
+      const response = await this.apiHttp.get<TRaw[]>(
+        path,
+        this.apiRequestConfig({ params: { ...params, limit, page }, signal })
+      );
+      items.push(...(response.data ?? []));
+      const header = Number(response.headers?.['x-pagination-page-count']);
+      pageCount = Number.isFinite(header) && header > 0 ? header : 1;
+      page += 1;
+    } while (page <= pageCount);
+
+    return items;
   }
 
   private apiRequestConfig(

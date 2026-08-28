@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it, mock } from 'node:test';
+import { describe, it, mock, type Mock } from 'node:test';
 
 import axios, { type AxiosInstance } from 'axios';
 
@@ -32,6 +32,18 @@ function buildClient(accessToken = ACCESS_TOKEN): {
     authHttp,
     apiHttp,
   };
+}
+
+type WatchedLibraryGet = (
+  path: string,
+  config: { params: Record<string, string | number> }
+) => Promise<{ data: unknown[]; headers: Record<string, string> }>;
+
+function traktApiWithGet(get: Mock<WatchedLibraryGet>): TraktAPI {
+  const { client, apiHttp } = buildClient();
+  mock.method(apiHttp, 'get', get);
+
+  return client;
 }
 
 function assertApiRequest(config: unknown, signal?: AbortSignal): void {
@@ -396,5 +408,86 @@ describe('TraktAPI errors', () => {
       );
       mock.restoreAll();
     }
+  });
+});
+
+describe('TraktAPI watched library pagination', () => {
+  it('follows X-Pagination-Page-Count and concatenates every page', async () => {
+    const pages = [
+      {
+        data: [
+          {
+            movie: { ids: { tmdb: 1 } },
+            last_watched_at: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        headers: { 'x-pagination-page-count': '2' },
+      },
+      {
+        data: [{ movie: { ids: { tmdb: 2 } }, last_watched_at: null }],
+        headers: { 'x-pagination-page-count': '2' },
+      },
+    ];
+    let call = 0;
+    const get = mock.fn<WatchedLibraryGet>(async () => pages[call++]);
+    const api = traktApiWithGet(get);
+
+    const result = await api.getWatchedMovies();
+
+    assert.equal(get.mock.calls.length, 2);
+    assert.deepEqual(
+      result.map((m) => m.tmdbId),
+      [1, 2]
+    );
+    assert.equal(get.mock.calls[1]!.arguments[1].params.page, 2);
+  });
+
+  it('rejects without partial data when a later page fails', async () => {
+    let call = 0;
+    const get = mock.fn<WatchedLibraryGet>(async () => {
+      if (call++ === 0) {
+        return {
+          data: [{ movie: { ids: { tmdb: 1 } } }],
+          headers: { 'x-pagination-page-count': '3' },
+        };
+      }
+      throw new Error('boom');
+    });
+    const api = traktApiWithGet(get);
+
+    await assert.rejects(() => api.getWatchedMovies());
+  });
+
+  it('requests shows with extended=progress at the 100 cap', async () => {
+    const get = mock.fn<WatchedLibraryGet>(async () => ({
+      data: [
+        {
+          show: { ids: { tmdb: 55 }, aired_episodes: 10 },
+          reset_at: null,
+          seasons: [
+            {
+              number: 1,
+              episodes: [
+                {
+                  number: 1,
+                  plays: 2,
+                  last_watched_at: '2026-02-02T00:00:00.000Z',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      headers: { 'x-pagination-page-count': '1' },
+    }));
+    const api = traktApiWithGet(get);
+
+    const result = await api.getWatchedShows();
+
+    assert.equal(get.mock.calls[0]!.arguments[0], '/sync/watched/shows');
+    assert.equal(get.mock.calls[0]!.arguments[1].params.extended, 'progress');
+    assert.equal(get.mock.calls[0]!.arguments[1].params.limit, 100);
+    assert.equal(result[0]!.airedEpisodes, 10);
+    assert.equal(result[0]!.episodes[0]!.plays, 2);
   });
 });
