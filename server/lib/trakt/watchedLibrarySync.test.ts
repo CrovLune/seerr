@@ -195,9 +195,9 @@ describe('buildWatchedSnapshot', () => {
       ])
     );
 
-    assert.equal(watchedEpisodesByTitle.get('Rick and Morty'), 81);
-    assert.equal(watchedEpisodesByTitle.get('Invincible'), 32);
-    assert.equal(watchedEpisodesByTitle.get('Twisted Metal'), 20);
-    assert.equal(watchedEpisodesByTitle.get('CyberSlav'), 1);
+    assert.equal(watchedEpisodesByTitle.get('Grimble and Sprocket'), 81);
+    assert.equal(watchedEpisodesByTitle.get('Steelbound'), 32);
+    assert.equal(watchedEpisodesByTitle.get('Chrome Carnage'), 20);
+    assert.equal(watchedEpisodesByTitle.get('SynthWard'), 1);
   });
 });

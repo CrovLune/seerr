@@ -2,12 +2,12 @@
   {
     "reset_at": null,
     "show": {
-      "title": "Rick and Morty",
+      "title": "Grimble and Sprocket",
       "year": 2015,
       "aired_episodes": 91,
       "ids": {
         "imdb": "tt5192837",
-        "slug": "rick-and-morty",
+        "slug": "grimble-and-sprocket",
         "tmdb": 84213,
         "tvdb": 391847,
         "trakt": 88214
@@ -464,12 +464,12 @@
   {
     "reset_at": null,
     "show": {
-      "title": "Invincible",
+      "title": "Steelbound",
       "year": 2019,
       "aired_episodes": 32,
       "ids": {
         "imdb": "tt7502931",
-        "slug": "invincible-2019",
+        "slug": "steelbound-2019",
         "tmdb": 112384,
         "tvdb": 402951,
         "trakt": 198432
@@ -671,12 +671,12 @@
   {
     "reset_at": null,
     "show": {
-      "title": "Twisted Metal",
+      "title": "Chrome Carnage",
       "year": 2020,
       "aired_episodes": 22,
       "ids": {
         "imdb": "tt15873204",
-        "slug": "twisted-metal",
+        "slug": "chrome-carnage",
         "tmdb": 145920,
         "tvdb": 379204,
         "trakt": 201873
@@ -798,12 +798,12 @@
   {
     "reset_at": null,
     "show": {
-      "title": "CyberSlav",
+      "title": "SynthWard",
       "year": 2022,
       "aired_episodes": 4,
       "ids": {
         "imdb": "tt13984571",
-        "slug": "cyberslav",
+        "slug": "synthward",
         "tmdb": 123847,
         "tvdb": 468213,
         "trakt": 234871
