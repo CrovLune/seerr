@@ -40,10 +40,23 @@ class TraktWatchedSyncService {
 
   /**
    * Isolates each connection's failure with `Promise.allSettled` so one broken connection
-   * cannot abort the sync for the rest of the household.
+   * cannot abort the sync for the rest of the household. Also swallows a failure to even list
+   * active connections: the scheduler calls this fire-and-forget, and Node's
+   * `--unhandled-rejections=throw` default would otherwise crash the process on a transient
+   * database error during a cron tick.
    */
   public async syncAll(): Promise<void> {
-    const connections = await traktConnectionRepository.findActive();
+    let connections: TraktConnection[];
+    try {
+      connections = await traktConnectionRepository.findActive();
+    } catch (error) {
+      logger.warn('Trakt watched sync could not list active connections', {
+        label: 'Trakt',
+        errorClass: error instanceof Error ? error.constructor.name : 'Unknown',
+      });
+      return;
+    }
+
     await Promise.allSettled(
       connections.map((connection) => this.syncConnection(connection))
     );

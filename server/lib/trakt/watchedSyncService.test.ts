@@ -7,6 +7,7 @@ import { User } from '@server/entity/User';
 import { traktAuthenticatedApiService } from '@server/lib/trakt/authenticatedApiService';
 import { traktConnectionRepository } from '@server/lib/trakt/connectionRepository';
 import { traktWatchedItemRepository } from '@server/lib/trakt/watchedItemRepository';
+import logger from '@server/logger';
 import { setupTestDb } from '@server/test/db';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -203,5 +204,31 @@ describe('traktWatchedSyncService.syncAll', () => {
       where: { id: failingConnection.id },
     });
     assert.equal(failedRow.lastWatchedSyncStatus, 'failed');
+  });
+
+  it('resolves rather than rejecting when listing active connections fails', async () => {
+    mock.method(traktConnectionRepository, 'findActive', async () => {
+      throw new Error('database unavailable');
+    });
+
+    const warnings: unknown[] = [];
+    const listener = (entry: unknown) => warnings.push(entry);
+    const wasSilent = logger.silent;
+    logger.silent = false;
+    logger.on('data', listener);
+
+    try {
+      await assert.doesNotReject(traktWatchedSyncService.syncAll());
+    } finally {
+      logger.off('data', listener);
+      logger.silent = wasSilent;
+    }
+
+    const serialized = JSON.stringify(warnings);
+    assert.match(
+      serialized,
+      /Trakt watched sync could not list active connections/
+    );
+    assert.doesNotMatch(serialized, /database unavailable/);
   });
 });
