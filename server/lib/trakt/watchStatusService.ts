@@ -13,18 +13,30 @@ import type {
   TraktWatcher,
 } from '@server/interfaces/api/traktInterfaces';
 import cacheManager from '@server/lib/cache';
-import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import { isTraktConfigured } from '@server/lib/trakt/config';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
+import {
+  displayNameFor,
+  getVisibleConnections,
+  type TraktMediaType as MediaType,
+} from '@server/lib/trakt/connectionVisibility';
 
 const LOOKUP_TIMEOUT_MS = 10_000;
 const MAPPING_HIT_TTL_SECONDS = 86_400;
 const MAPPING_MISS_TTL_SECONDS = 3_600;
 const WATCH_STATUS_TTL_SECONDS = 300;
 const CONNECTION_CONCURRENCY = 4;
-
-type MediaType = 'movie' | 'tv';
+const VISIBLE_CONNECTION_FIELDS = [
+  'connection.id',
+  'connection.userId',
+  'connection.username',
+  'connection.tokenVersion',
+  'user.id',
+  'user.username',
+  'user.plexUsername',
+  'user.jellyfinUsername',
+];
 
 type CachedMapping = { kind: 'hit'; traktId: number } | { kind: 'miss' };
 
@@ -63,7 +75,10 @@ export class TraktWatchStatusService {
     mediaType: MediaType;
     tmdbId: number;
   }): Promise<TraktWatchStatusResponse> {
-    const connections = await this.getVisibleConnections(input.viewer);
+    const connections = await getVisibleConnections(
+      input.viewer,
+      VISIBLE_CONNECTION_FIELDS
+    );
     const response = {
       mediaType: input.mediaType,
       tmdbId: input.tmdbId,
@@ -119,7 +134,10 @@ export class TraktWatchStatusService {
     viewer: User;
     tmdbId: number;
   }): Promise<TraktSeasonWatchStatusResponse> {
-    const connections = await this.getVisibleConnections(input.viewer);
+    const connections = await getVisibleConnections(
+      input.viewer,
+      VISIBLE_CONNECTION_FIELDS
+    );
     const response = {
       tmdbId: input.tmdbId,
       householdSize: connections.length,
@@ -145,7 +163,7 @@ export class TraktWatchStatusService {
       async (connection) => ({
         watcher: {
           userId: connection.userId,
-          displayName: this.displayNameFor(connection),
+          displayName: displayNameFor(connection),
         },
         // A single failing connection must not blank the whole household view.
         progress: await this.getConnectionProgress(connection, mapping.traktId),
@@ -262,34 +280,6 @@ export class TraktWatchStatusService {
         ),
       }))
       .sort((a, b) => a.seasonNumber - b.seasonNumber);
-  }
-
-  private getVisibleConnections(viewer: User): Promise<TraktConnection[]> {
-    const query = getRepository(TraktConnection)
-      .createQueryBuilder('connection')
-      .innerJoinAndSelect('connection.user', 'user')
-      .select([
-        'connection.id',
-        'connection.userId',
-        'connection.username',
-        'connection.tokenVersion',
-        'user.id',
-        'user.username',
-        'user.plexUsername',
-        'user.jellyfinUsername',
-      ])
-      .where('connection.status = :status', {
-        status: TraktConnectionStatus.ACTIVE,
-      })
-      .orderBy('connection.userId', 'ASC');
-
-    if (!viewer.hasPermission(Permission.ADMIN)) {
-      query.andWhere('connection.userId = :viewerId', {
-        viewerId: viewer.id,
-      });
-    }
-
-    return query.getMany();
   }
 
   private async getMapping(
@@ -415,25 +405,13 @@ export class TraktWatchStatusService {
     }
   }
 
-  private displayNameFor(connection: TraktConnection): string {
-    const user = connection.user;
-
-    return (
-      user.displayName ||
-      user.username ||
-      user.plexUsername ||
-      user.jellyfinUsername ||
-      'Seerr user'
-    );
-  }
-
   private toItem(
     connection: TraktConnection,
     status: Pick<TraktWatchStatusItem, 'watched' | 'watchedAt' | 'status'>
   ): TraktWatchStatusItem {
     return {
       userId: connection.userId,
-      displayName: this.displayNameFor(connection),
+      displayName: displayNameFor(connection),
       traktUsername: connection.username ?? null,
       ...status,
     };

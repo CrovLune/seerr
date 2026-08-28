@@ -1,8 +1,4 @@
-import { getRepository } from '@server/datasource';
-import {
-  TraktConnection,
-  TraktConnectionStatus,
-} from '@server/entity/TraktConnection';
+import type { TraktConnection } from '@server/entity/TraktConnection';
 import type { TraktWatchedItem } from '@server/entity/TraktWatchedItem';
 import type { User } from '@server/entity/User';
 import type {
@@ -11,10 +7,22 @@ import type {
   TraktCardWatchStatusResponse,
   TraktCardWatcher,
 } from '@server/interfaces/api/traktInterfaces';
-import { Permission } from '@server/lib/permissions';
+import {
+  displayNameFor,
+  getVisibleConnections,
+  type TraktMediaType as MediaType,
+} from '@server/lib/trakt/connectionVisibility';
 import { traktWatchedItemRepository } from '@server/lib/trakt/watchedItemRepository';
 
-type MediaType = 'movie' | 'tv';
+const VISIBLE_CONNECTION_FIELDS = [
+  'connection.id',
+  'connection.userId',
+  'connection.lastWatchedSuccessfulSyncAt',
+  'user.id',
+  'user.username',
+  'user.plexUsername',
+  'user.jellyfinUsername',
+];
 
 /**
  * A stored row means "watched"; its absence means "not started" by construction. Once
@@ -49,7 +57,10 @@ class TraktCardWatchStatusService {
     viewer: User;
     items: { mediaType: MediaType; tmdbId: number }[];
   }): Promise<TraktCardWatchStatusResponse> {
-    const connections = await this.getVisibleConnections(input.viewer);
+    const connections = await getVisibleConnections(
+      input.viewer,
+      VISIBLE_CONNECTION_FIELDS
+    );
     // A connection with no successful sync has no trustworthy data. Rendering it as
     // not-started would be a confident lie on every poster in the library, so it is
     // dropped entirely rather than shown grey.
@@ -78,7 +89,7 @@ class TraktCardWatchStatusService {
         stateFor
       ).map((connection) => ({
         userId: connection.userId,
-        displayName: this.displayNameFor(connection),
+        displayName: displayNameFor(connection),
         state: stateFor(connection),
       }));
 
@@ -120,48 +131,6 @@ class TraktCardWatchStatusService {
       (connection) => stateFor(connection) === 'not_started'
     );
     return [...viewer, ...watched, ...rest];
-  }
-
-  /**
-   * Mirrors `TraktWatchStatusService`'s household visibility rule: admins see every active
-   * connection, everyone else sees only their own.
-   */
-  private getVisibleConnections(viewer: User): Promise<TraktConnection[]> {
-    const query = getRepository(TraktConnection)
-      .createQueryBuilder('connection')
-      .innerJoinAndSelect('connection.user', 'user')
-      .select([
-        'connection.id',
-        'connection.userId',
-        'connection.lastWatchedSuccessfulSyncAt',
-        'user.id',
-        'user.username',
-        'user.plexUsername',
-        'user.jellyfinUsername',
-      ])
-      .where('connection.status = :status', {
-        status: TraktConnectionStatus.ACTIVE,
-      })
-      .orderBy('connection.userId', 'ASC');
-
-    if (!viewer.hasPermission(Permission.ADMIN)) {
-      query.andWhere('connection.userId = :viewerId', {
-        viewerId: viewer.id,
-      });
-    }
-
-    return query.getMany();
-  }
-
-  private displayNameFor(connection: TraktConnection): string {
-    const user = connection.user;
-    return (
-      user.displayName ||
-      user.username ||
-      user.plexUsername ||
-      user.jellyfinUsername ||
-      'Seerr user'
-    );
   }
 }
 

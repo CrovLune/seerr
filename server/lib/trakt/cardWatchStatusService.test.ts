@@ -145,12 +145,17 @@ describe('traktCardWatchStatusService.getBatch', () => {
 
   it('orders the viewer first, then watchers, then the rest', async () => {
     const viewer = await admin();
-    const watcher = await saveUser(3);
+    // `rest` is created (and thus gets a lower id) before `watcher`, so plain
+    // `ORDER BY userId ASC` would yield [viewer, rest, watcher] -- disagreeing with the
+    // intended [viewer, watcher, rest]. This is what makes the test fail if the
+    // viewer-then-watched-then-rest grouping were ever dropped.
     const rest = await saveUser(4);
+    const watcher = await saveUser(3);
     const viewerConnection = await saveConnection(viewer);
-    const watcherConnection = await saveConnection(watcher);
     const restConnection = await saveConnection(rest);
+    const watcherConnection = await saveConnection(watcher);
     await traktWatchedItemRepository.reconcile(viewerConnection.id, []);
+    await traktWatchedItemRepository.reconcile(restConnection.id, []);
     await traktWatchedItemRepository.reconcile(watcherConnection.id, [
       {
         mediaType: 'movie',
@@ -160,7 +165,6 @@ describe('traktCardWatchStatusService.getBatch', () => {
         lastWatchedAt: null,
       },
     ]);
-    await traktWatchedItemRepository.reconcile(restConnection.id, []);
 
     const response = await traktCardWatchStatusService.getBatch({
       viewer,
@@ -172,5 +176,66 @@ describe('traktCardWatchStatusService.getBatch', () => {
       response.results[0]!.watchers.map((w: TraktCardWatcher) => w.userId),
       [viewer.id, watcher.id, rest.id]
     );
+  });
+
+  it('shows only the viewer connection to a non-admin viewer', async () => {
+    const viewer = await saveUser(5);
+    const other = await saveUser(6);
+    const viewerConnection = await saveConnection(viewer);
+    const otherConnection = await saveConnection(other);
+    await traktWatchedItemRepository.reconcile(viewerConnection.id, []);
+    await traktWatchedItemRepository.reconcile(otherConnection.id, [
+      {
+        mediaType: 'movie',
+        tmdbId: 1,
+        watchedEpisodes: 1,
+        airedEpisodes: null,
+        lastWatchedAt: null,
+      },
+    ]);
+
+    const response = await traktCardWatchStatusService.getBatch({
+      viewer,
+      items: [{ mediaType: 'movie', tmdbId: 1 }],
+    });
+
+    assert.deepEqual(
+      response.results[0]!.watchers.map((w: TraktCardWatcher) => w.userId),
+      [viewer.id]
+    );
+    assert.equal(response.results[0]!.totalWatchers, 1);
+  });
+
+  it('sets viewerState to the derived state for an eligible viewer connection', async () => {
+    const viewer = await admin();
+    const viewerConnection = await saveConnection(viewer);
+    await traktWatchedItemRepository.reconcile(viewerConnection.id, [
+      {
+        mediaType: 'movie',
+        tmdbId: 1,
+        watchedEpisodes: 1,
+        airedEpisodes: null,
+        lastWatchedAt: null,
+      },
+    ]);
+
+    const response = await traktCardWatchStatusService.getBatch({
+      viewer,
+      items: [{ mediaType: 'movie', tmdbId: 1 }],
+    });
+
+    assert.equal(response.results[0]!.viewerState, 'complete');
+  });
+
+  it('sets viewerState to null when the viewer has no eligible connection', async () => {
+    const viewer = await admin();
+    await saveConnection(viewer);
+
+    const response = await traktCardWatchStatusService.getBatch({
+      viewer,
+      items: [{ mediaType: 'movie', tmdbId: 1 }],
+    });
+
+    assert.equal(response.results[0]!.viewerState, null);
   });
 });
