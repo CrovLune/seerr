@@ -508,7 +508,7 @@ const TitleCard = ({
             leaveFrom="opacity-100"
             leaveTo="opacity-0"
           >
-            <div className="absolute inset-0 z-40 overflow-hidden rounded-xl">
+            <div className="absolute inset-0 z-[35] overflow-hidden rounded-xl">
               <Link
                 href={
                   mediaType === 'movie'
