@@ -3,6 +3,7 @@ import LoadingBar from '@app/components/LoadingBar';
 import PWAHeader from '@app/components/PWAHeader';
 import ServiceWorkerSetup from '@app/components/ServiceWorkerSetup';
 import StatusChecker from '@app/components/StatusChecker';
+import { TraktWatchedStatusProvider } from '@app/components/TraktWatchChips/WatchedStatusProvider';
 import { InteractionProvider } from '@app/context/InteractionContext';
 import { LanguageContext } from '@app/context/LanguageContext';
 import { SettingsProvider } from '@app/context/SettingsContext';
@@ -206,27 +207,29 @@ const CoreApp: Omit<NextAppComponentType, 'origGetInitialProps'> = ({
           <LoadingBar />
           <SettingsProvider currentSettings={currentSettings}>
             <InteractionProvider>
-              <Head>
-                <title>{currentSettings.applicationTitle}</title>
-                <meta
-                  name="viewport"
-                  content="initial-scale=1, viewport-fit=cover, width=device-width"
+              <TraktWatchedStatusProvider>
+                <Head>
+                  <title>{currentSettings.applicationTitle}</title>
+                  <meta
+                    name="viewport"
+                    content="initial-scale=1, viewport-fit=cover, width=device-width"
+                  />
+                  <PWAHeader
+                    applicationTitle={currentSettings.applicationTitle}
+                  />
+                </Head>
+                <StatusChecker />
+                <ServiceWorkerSetup />
+                <UserContext initialUser={user}>{component}</UserContext>
+                <Toaster
+                  position="top-right"
+                  toastOptions={{ duration: 4000 }}
+                  containerStyle={{
+                    zIndex: 10000,
+                    paddingTop: 'env(safe-area-inset-top)',
+                  }}
                 />
-                <PWAHeader
-                  applicationTitle={currentSettings.applicationTitle}
-                />
-              </Head>
-              <StatusChecker />
-              <ServiceWorkerSetup />
-              <UserContext initialUser={user}>{component}</UserContext>
-              <Toaster
-                position="top-right"
-                toastOptions={{ duration: 4000 }}
-                containerStyle={{
-                  zIndex: 10000,
-                  paddingTop: 'env(safe-area-inset-top)',
-                }}
-              />
+              </TraktWatchedStatusProvider>
             </InteractionProvider>
           </SettingsProvider>
         </IntlProvider>
