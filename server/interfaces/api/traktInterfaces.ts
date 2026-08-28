@@ -100,3 +100,23 @@ export interface TraktSeasonWatchStatusResponse {
   householdSize: number;
   seasons: TraktSeasonWatchStatusItem[];
 }
+
+export type TraktCardWatchState = 'not_started' | 'partial' | 'complete';
+
+export interface TraktCardWatcher {
+  userId: number;
+  displayName: string;
+  state: TraktCardWatchState;
+}
+
+export interface TraktCardWatchStatusItem {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  viewerState: TraktCardWatchState | null;
+  watchers: TraktCardWatcher[];
+  totalWatchers: number;
+}
+
+export interface TraktCardWatchStatusResponse {
+  results: TraktCardWatchStatusItem[];
+}
