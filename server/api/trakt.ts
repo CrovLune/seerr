@@ -435,15 +435,39 @@ export default class TraktAPI {
         path,
         this.apiRequestConfig({ params: { ...params, limit, page }, signal })
       );
-      items.push(...(response.data ?? []));
-      const header = Number(response.headers?.['x-pagination-page-count']);
-      if (!Number.isFinite(header) || header < 1) {
+      const pageData = response.data ?? [];
+      const rawHeader = response.headers?.['x-pagination-page-count'];
+      if (rawHeader === undefined || rawHeader === null || rawHeader === '') {
         throw new TraktApiError(
           'Trakt watched library page count is unreadable',
           0,
           'PAGE_COUNT_MISSING'
         );
       }
+      const header = Number(rawHeader);
+      if (!Number.isFinite(header) || header < 0) {
+        throw new TraktApiError(
+          'Trakt watched library page count is unreadable',
+          0,
+          'PAGE_COUNT_MISSING'
+        );
+      }
+
+      if (header === 0) {
+        // A reported zero is only trustworthy when the body agrees nothing exists; a zero
+        // alongside real items means the header itself can't be trusted.
+        if (pageData.length > 0) {
+          throw new TraktApiError(
+            'Trakt reported zero watched library pages alongside page data',
+            0,
+            'PAGE_COUNT_MISSING'
+          );
+        }
+        items.push(...pageData);
+        break;
+      }
+
+      items.push(...pageData);
       pageCount = header;
 
       if (pageCount > MAX_WATCHED_PAGES) {

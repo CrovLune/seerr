@@ -542,4 +542,36 @@ describe('TraktAPI watched library pagination', () => {
       assert.equal(get.mock.calls.length, 1);
     });
   }
+
+  it('resolves with an empty collection when the page count header is 0 and the page is empty', async () => {
+    const get = mock.fn<WatchedLibraryGet>(async () => ({
+      data: [],
+      headers: { 'x-pagination-page-count': '0' },
+    }));
+    const api = traktApiWithGet(get);
+
+    // Defeasibility: restoring the `header < 1` guard would make this reject instead of
+    // resolving with an empty array.
+    const result = await api.getWatchedMovies();
+
+    assert.deepEqual(result, []);
+    assert.equal(get.mock.calls.length, 1);
+  });
+
+  it('rejects when the page count header is 0 but the page has data', async () => {
+    const get = mock.fn<WatchedLibraryGet>(async () => ({
+      data: [{ movie: { ids: { tmdb: 1 } } }],
+      headers: { 'x-pagination-page-count': '0' },
+    }));
+    const api = traktApiWithGet(get);
+
+    await assert.rejects(
+      () => api.getWatchedMovies(),
+      (error: unknown) => {
+        assert.ok(error instanceof TraktApiError);
+        assert.equal((error as TraktApiError).code, 'PAGE_COUNT_MISSING');
+        return true;
+      }
+    );
+  });
 });
