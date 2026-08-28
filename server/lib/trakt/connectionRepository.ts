@@ -168,6 +168,24 @@ class TraktConnectionRepository {
       { lastValidatedAt: new Date() }
     );
   }
+
+  public findActive(): Promise<TraktConnection[]> {
+    return getRepository(TraktConnection).find({
+      where: { status: TraktConnectionStatus.ACTIVE },
+    });
+  }
+
+  /**
+   * Never touches `lastWatchedSuccessfulSyncAt` — that column means a complete snapshot was
+   * committed, and stamping it on a failed sync would read as "nothing watched" against an
+   * empty or stale table.
+   */
+  public async markWatchedSyncFailed(connectionId: number): Promise<void> {
+    await getRepository(TraktConnection).update(
+      { id: connectionId },
+      { lastWatchedSyncStatus: 'failed' }
+    );
+  }
 }
 
 export const traktConnectionRepository = new TraktConnectionRepository();
