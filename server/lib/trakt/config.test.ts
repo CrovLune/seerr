@@ -198,4 +198,11 @@ describe('Trakt configuration', () => {
       );
     });
   });
+
+  it('registers the watched sync job with a 6-hour default schedule', () => {
+    assert.equal(
+      getSettings().jobs['trakt-watched-sync'].schedule,
+      '0 0 */6 * * *'
+    );
+  });
 });

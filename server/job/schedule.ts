@@ -13,6 +13,7 @@ import { radarrScanner } from '@server/lib/scanners/radarr';
 import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import type { JobId } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
+import { traktWatchedSyncService } from '@server/lib/trakt/watchedSyncService';
 import watchlistSync from '@server/lib/watchlistsync';
 import logger from '@server/logger';
 import schedule from 'node-schedule';
@@ -257,6 +258,20 @@ export const startJobs = (): void => {
     }),
     running: () => blocklistedTagsProcessor.status().running,
     cancelFn: () => blocklistedTagsProcessor.cancel(),
+  });
+
+  scheduledJobs.push({
+    id: 'trakt-watched-sync',
+    name: 'Trakt Watched Sync',
+    type: 'process',
+    interval: 'hours',
+    cronSchedule: jobs['trakt-watched-sync'].schedule,
+    job: schedule.scheduleJob(jobs['trakt-watched-sync'].schedule, () => {
+      logger.info('Starting scheduled job: Trakt Watched Sync', {
+        label: 'Jobs',
+      });
+      traktWatchedSyncService.syncAll();
+    }),
   });
 
   logger.info('Scheduled jobs loaded', { label: 'Jobs' });

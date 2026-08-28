@@ -1,4 +1,5 @@
 import type { TraktProfile, TraktTokenSet } from '@server/api/trakt';
+import type { TraktConnection } from '@server/entity/TraktConnection';
 import type { TraktSafeResultCode } from '@server/interfaces/api/traktInterfaces';
 import cacheManager from '@server/lib/cache';
 import { traktAuthorizationPolicy } from '@server/lib/trakt/authorizationPolicy';
@@ -106,7 +107,8 @@ class TraktConnectionLifecycleService {
               profile
             )
         );
-        return persisted;
+        this.triggerWatchedSync(persisted.connection);
+        return { connectionId: persisted.connectionId };
       } catch (error) {
         if (this.isUniqueConstraintError(error) && attempt === 0) {
           uniqueRace = error;
@@ -118,12 +120,20 @@ class TraktConnectionLifecycleService {
     throw uniqueRace;
   }
 
+  private triggerWatchedSync(connection: TraktConnection): void {
+    void import('@server/lib/trakt/watchedSyncService')
+      .then(({ traktWatchedSyncService }) =>
+        traktWatchedSyncService.syncConnection(connection)
+      )
+      .catch(() => undefined);
+  }
+
   private async persistCompletionTransaction(
     manager: EntityManager,
     transactionId: string,
     tokens: TraktTokenSet,
     profile: TraktProfile
-  ): Promise<{ connectionId: number }> {
+  ): Promise<{ connectionId: number; connection: TraktConnection }> {
     const now = new Date();
     const completion = await traktOAuthTransactionService.markSucceeded(
       manager,
@@ -190,7 +200,7 @@ class TraktConnectionLifecycleService {
       }
     );
 
-    return { connectionId: saved.id };
+    return { connectionId: saved.id, connection: saved };
   }
 
   private isUniqueConstraintError(error: unknown): boolean {

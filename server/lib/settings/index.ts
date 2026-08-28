@@ -375,7 +375,8 @@ export type JobId =
   | 'jellyfin-full-scan'
   | 'image-cache-cleanup'
   | 'availability-sync'
-  | 'process-blocklisted-tags';
+  | 'process-blocklisted-tags'
+  | 'trakt-watched-sync';
 
 export interface AllSettings {
   clientId: string;
@@ -619,6 +620,9 @@ class Settings {
         },
         'process-blocklisted-tags': {
           schedule: '0 30 1 */7 * *',
+        },
+        'trakt-watched-sync': {
+          schedule: '0 0 */6 * * *',
         },
       },
       network: {
