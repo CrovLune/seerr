@@ -298,6 +298,89 @@ components:
           enum:
             - ok
             - temporarily_unavailable
+    TraktCardWatchState:
+      type: string
+      enum:
+        - not_started
+        - partial
+        - complete
+    TraktCardWatcher:
+      type: object
+      required:
+        - userId
+        - displayName
+        - state
+      properties:
+        userId:
+          type: integer
+        displayName:
+          type: string
+        state:
+          $ref: '#/components/schemas/TraktCardWatchState'
+    TraktCardWatchStatusItem:
+      type: object
+      required:
+        - mediaType
+        - tmdbId
+        - viewerState
+        - watchers
+        - totalWatchers
+      properties:
+        mediaType:
+          type: string
+          enum:
+            - movie
+            - tv
+        tmdbId:
+          type: integer
+          minimum: 1
+        viewerState:
+          type: string
+          nullable: true
+          enum:
+            - not_started
+            - partial
+            - complete
+        watchers:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraktCardWatcher'
+        totalWatchers:
+          type: integer
+          minimum: 0
+    TraktCardWatchStatus:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraktCardWatchStatusItem'
+    TraktCardWatchStatusBatchRequestItem:
+      type: object
+      required:
+        - mediaType
+        - tmdbId
+      properties:
+        mediaType:
+          type: string
+          enum:
+            - movie
+            - tv
+        tmdbId:
+          type: integer
+          minimum: 1
+    TraktCardWatchStatusBatchRequest:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TraktCardWatchStatusBatchRequestItem'
     TraktUnlinkResult:
       type: object
       required:
@@ -2693,6 +2776,28 @@ paths:
                 $ref: '#/components/schemas/TraktSeasonWatchStatus'
         '400':
           description: Invalid TMDB ID
+        '401':
+          description: Authentication required
+  /trakt/watchstatus/batch:
+    post:
+      summary: Get card watch state for a batch of TMDB titles
+      tags:
+        - users
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TraktCardWatchStatusBatchRequest'
+      responses:
+        '200':
+          description: Per-title household watch state for the requested batch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraktCardWatchStatus'
+        '400':
+          description: Invalid or oversized batch
         '401':
           description: Authentication required
   /auth/trakt/callback:

@@ -15,6 +15,7 @@ import { User } from '@server/entity/User';
 import cacheManager from '@server/lib/cache';
 import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
+import { traktCardWatchStatusService } from '@server/lib/trakt/cardWatchStatusService';
 import { TraktConnectionService } from '@server/lib/trakt/connectionService';
 import { TraktWatchStatusService } from '@server/lib/trakt/watchStatusService';
 import logger from '@server/logger';
@@ -195,6 +196,72 @@ describe('Trakt account routes', () => {
       assert.equal(response.status, 400, pathValue);
     }
     assert.equal(getWatchStatus.mock.callCount(), 0);
+  });
+
+  it('requires authentication for batch watch status', async () => {
+    const response = await request(app)
+      .post('/trakt/watchstatus/batch')
+      .send({ items: [] });
+
+    assert.equal(response.status, 401);
+  });
+
+  it('rejects a batch watch-status request over the item cap', async () => {
+    const friend = await authenticatedAgent('friend@seerr.dev');
+    const getBatch = mock.method(
+      traktCardWatchStatusService,
+      'getBatch',
+      async () => ({ results: [] })
+    );
+    const items = Array.from({ length: 101 }, (_, i) => ({
+      mediaType: 'movie' as const,
+      tmdbId: i + 1,
+    }));
+
+    const response = await friend
+      .post('/trakt/watchstatus/batch')
+      .send({ items });
+
+    assert.equal(response.status, 400);
+    assert.equal(getBatch.mock.callCount(), 0);
+  });
+
+  it('rejects a malformed batch watch-status body before calling the service', async () => {
+    const friend = await authenticatedAgent('friend@seerr.dev');
+    const getBatch = mock.method(
+      traktCardWatchStatusService,
+      'getBatch',
+      async () => ({ results: [] })
+    );
+
+    const response = await friend
+      .post('/trakt/watchstatus/batch')
+      .send({ items: [{ mediaType: 'book', tmdbId: 1 }] });
+
+    assert.equal(response.status, 400);
+    assert.equal(getBatch.mock.callCount(), 0);
+  });
+
+  it('keeps batch watch status compatible with the production OpenAPI validator', async () => {
+    const friendUser = await getRepository(User).findOneByOrFail({
+      email: 'friend@seerr.dev',
+    });
+    getSettings().main.apiKey = 'validator-test-api-key';
+    const getBatch = mock.method(
+      traktCardWatchStatusService,
+      'getBatch',
+      async () => ({ results: [] })
+    );
+
+    const response = await request(validatedApp)
+      .post('/api/v1/trakt/watchstatus/batch')
+      .set('X-API-Key', 'validator-test-api-key')
+      .set('X-API-User', String(friendUser.id))
+      .send({ items: [] });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { results: [] });
+    assert.equal(getBatch.mock.callCount(), 1);
   });
 
   it('keeps watch status compatible with the production OpenAPI validator', async () => {
