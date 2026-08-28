@@ -59,6 +59,12 @@ export class TraktConnection {
   @Column({ type: 'int', default: 1 })
   public tokenVersion: number;
 
+  @DbAwareColumn({ type: 'datetime', nullable: true })
+  public lastWatchedSuccessfulSyncAt: Date | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  public lastWatchedSyncStatus: string | null;
+
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'connectedByUserId' })
   public connectedByUser?: User | null;
