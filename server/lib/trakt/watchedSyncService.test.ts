@@ -150,6 +150,22 @@ describe('traktWatchedSyncCoordinator', () => {
       'the second caller must run its own operation rather than join the first'
     );
   });
+
+  it('a rejected predecessor does not poison a subsequent run for the same connectionId', async () => {
+    let secondRan = false;
+
+    const first = traktWatchedSyncCoordinator.run(2, async () => {
+      throw new Error('predecessor failed');
+    });
+    const second = traktWatchedSyncCoordinator.run(2, async () => {
+      secondRan = true;
+      return 'ok';
+    });
+
+    await assert.rejects(first, /predecessor failed/);
+    assert.equal(await second, 'ok');
+    assert.equal(secondRan, true);
+  });
 });
 
 describe('traktWatchedSyncService.syncAll', () => {
