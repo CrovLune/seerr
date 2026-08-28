@@ -396,7 +396,7 @@ const TitleCard = ({
             />
           )}
           {(mediaType === 'movie' || mediaType === 'tv') && (
-            <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-end p-2">
               <TraktWatchChips mediaType={mediaType} tmdbId={id} />
             </div>
           )}
