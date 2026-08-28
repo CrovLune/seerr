@@ -7,6 +7,8 @@ import Tooltip from '@app/components/Common/Tooltip';
 import RequestModal from '@app/components/RequestModal';
 import ErrorCard from '@app/components/TitleCard/ErrorCard';
 import Placeholder from '@app/components/TitleCard/Placeholder';
+import TraktWatchChips from '@app/components/TraktWatchChips';
+import { useTraktCardWatchStatus } from '@app/components/TraktWatchChips/WatchedStatusProvider';
 import { useIsTouch } from '@app/hooks/useIsTouch';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, UserType, useUser } from '@app/hooks/useUser';
@@ -80,6 +82,8 @@ const TitleCard = ({
     useState<boolean>(!isAddedToWatchlist);
   const [showBlocklistModal, setShowBlocklistModal] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
+  const cardStatus = useTraktCardWatchStatus(mediaType, id);
+  const viewerState = cardStatus?.viewerState ?? null;
 
   // Just to get the year from the date
   if (year) {
@@ -385,6 +389,17 @@ const TitleCard = ({
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
             fill
           />
+          {viewerState === 'complete' && (
+            <div
+              data-testid="trakt-watched-dim"
+              className="pointer-events-none absolute inset-0 z-20 bg-gray-950/60"
+            />
+          )}
+          {(mediaType === 'movie' || mediaType === 'tv') && (
+            <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
+              <TraktWatchChips mediaType={mediaType} tmdbId={id} />
+            </div>
+          )}
           <div className="absolute left-0 right-0 flex items-center justify-between p-2">
             <div
               className={`pointer-events-none z-40 self-start rounded-full border shadow-md ${
@@ -493,7 +508,7 @@ const TitleCard = ({
             leaveFrom="opacity-100"
             leaveTo="opacity-0"
           >
-            <div className="absolute inset-0 overflow-hidden rounded-xl">
+            <div className="absolute inset-0 z-40 overflow-hidden rounded-xl">
               <Link
                 href={
                   mediaType === 'movie'

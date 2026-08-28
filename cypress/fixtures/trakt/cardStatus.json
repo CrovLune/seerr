@@ -1,0 +1,36 @@
+{
+  "results": [
+    {
+      "mediaType": "movie",
+      "tmdbId": 5001,
+      "viewerState": "complete",
+      "totalWatchers": 5,
+      "watchers": [
+        { "userId": 1, "displayName": "Ana", "state": "complete" },
+        { "userId": 2, "displayName": "Ben", "state": "complete" },
+        { "userId": 3, "displayName": "Cy", "state": "partial" },
+        { "userId": 4, "displayName": "Dee", "state": "not_started" }
+      ]
+    },
+    {
+      "mediaType": "movie",
+      "tmdbId": 5002,
+      "viewerState": "not_started",
+      "totalWatchers": 2,
+      "watchers": [
+        { "userId": 1, "displayName": "Ana", "state": "not_started" },
+        { "userId": 2, "displayName": "Ben", "state": "not_started" }
+      ]
+    },
+    {
+      "mediaType": "movie",
+      "tmdbId": 5003,
+      "viewerState": "partial",
+      "totalWatchers": 2,
+      "watchers": [
+        { "userId": 1, "displayName": "Ana", "state": "partial" },
+        { "userId": 2, "displayName": "Ben", "state": "complete" }
+      ]
+    }
+  ]
+}
